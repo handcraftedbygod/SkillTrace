@@ -226,12 +226,22 @@ def _progress_cell(done: int, total: int):
 
 def _build_progress_table(rows: list[SkillProgress]) -> Table:
     table = Table(show_header=True, header_style="bold cyan", border_style="dim", pad_edge=True, expand=False)
-    table.add_column("Skill")
-    table.add_column("Status")
-    table.add_column("Files")
-    table.add_column("Issues")
-    table.add_column("Risk")
-    table.add_column("Progress")
+    # Explicit, content-independent widths: without these, Rich re-measures
+    # every column from its current cells on each repaint, and a column's
+    # widest value keeps changing as rows go Queued -> Scanning -> Done (a
+    # bare "·" placeholder is far narrower than "CRITICAL (15)" or a real
+    # progress bar) - the table's vertical borders visibly shift on every
+    # single update instead of staying put. Skill/Files are sized from the
+    # actual rows (known upfront, never change after construction); the
+    # rest are sized from the widest string each column can ever hold.
+    skill_width = max([len("Skill"), len("Overall")] + [len(r.name) for r in rows])
+    files_width = max([len("Files")] + [len(f"{r.files_total}/{r.files_total}") for r in rows])
+    table.add_column("Skill", width=skill_width)
+    table.add_column("Status", width=len("⠋ Scanning"))
+    table.add_column("Files", width=files_width)
+    table.add_column("Issues", width=6)
+    table.add_column("Risk", width=len("CRITICAL (100)"))
+    table.add_column("Progress", width=25)
     for row in rows:
         files_text = Text(f"{row.files_done}/{row.files_total}" if row.files_total else "·", style="dim")
         if row.status in ("Scanning", "Done"):
