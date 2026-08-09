@@ -110,13 +110,21 @@ def _make_scan_help_action(console: Console) -> type[argparse.Action]:
 
 
 def _print_scan_help(console: Console, parser: argparse.ArgumentParser) -> None:
-    console.print(parser.format_usage().strip())
+    format_invocation = argparse.HelpFormatter(parser.prog)._format_action_invocation
+    # Not parser.format_usage(): argparse wraps its own bracketed [--flag VALUE]
+    # synopsis to a width it detects itself, then Rich re-wraps that already-
+    # wrapped text to the width *it* detects - two layout engines fighting
+    # produces broken mid-flag line breaks ("[--invoke\nCMD]") with misaligned
+    # continuation indents. Every flag is fully documented in the table below
+    # anyway, so the synopsis only needs to show the invocation shape, which is
+    # short enough to never wrap.
+    positionals = " ".join(format_invocation(a) for a in parser._get_positional_actions())
+    console.print(f"Usage: {parser.prog} [OPTIONS] {positionals}", style="bold")
     console.print()
     if parser.description:
         console.print(parser.description)
         console.print()
 
-    format_invocation = argparse.HelpFormatter(parser.prog)._format_action_invocation
     table = Table(show_header=True, header_style="bold cyan", border_style="dim", pad_edge=True, expand=False)
     table.add_column("Flag")
     table.add_column("Description", ratio=1, overflow="fold")
