@@ -6,7 +6,6 @@ import argparse
 import os
 import sys
 import tempfile
-import textwrap
 import time
 from collections import Counter
 from contextlib import nullcontext
@@ -14,7 +13,9 @@ from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
-from rich_argparse import RawDescriptionRichHelpFormatter, RichHelpFormatter
+from rich.table import Table
+from rich.text import Text
+from rich_argparse import RichHelpFormatter
 
 from sentinel.console import (
     CollectionProgress,
@@ -75,27 +76,82 @@ _SCAN_EXAMPLES = [
     ("skilltrace scan ./my-skill --json -o report.json", "machine-readable output to a file"),
 ]
 
-_EXIT_CODES_TEXT = (
-    "Exit codes: 0 success (no findings at/above --fail-threshold, or no threshold set) · "
-    "1 findings at/above --fail-threshold · 2 could not resolve the skill source (bad "
-    "path/URL) or every SKILL.md found failed to parse · 3 Docker unavailable · "
-    "4 sandbox error · 5 --semantic-review requested without ANTHROPIC_API_KEY set. "
+_EXIT_CODES = [
+    (0, "Success (no findings at/above --fail-threshold, or no threshold set)"),
+    (1, "Findings at/above --fail-threshold"),
+    (2, "Could not resolve the skill source (bad path/URL), or every SKILL.md found failed to parse"),
+    (3, "Docker unavailable"),
+    (4, "Sandbox error"),
+    (5, "--semantic-review requested without ANTHROPIC_API_KEY set"),
+]
+
+_EXIT_CODES_NOTE = (
     "A repo with no SKILL.md anywhere is no longer a hard failure: it's scanned as a "
     "single unlabeled directory instead (see the no_skill_md finding)."
 )
 
 
-def _build_scan_epilog() -> str:
-    # RawDescriptionRichHelpFormatter preserves literal newlines (needed for the
-    # aligned Examples list) but also disables auto-wrapping entirely — textwrap
-    # pre-wraps the exit-codes prose once so it doesn't overflow the terminal
-    # as one giant unbroken line.
-    cmd_width = max(len(cmd) for cmd, _ in _SCAN_EXAMPLES)
-    example_lines = "\n".join(f"  {cmd.ljust(cmd_width)}   # {blurb}" for cmd, blurb in _SCAN_EXAMPLES)
-    return f"Examples:\n{example_lines}\n\n" + textwrap.fill(_EXIT_CODES_TEXT, width=78)
+def _make_scan_help_action(console: Console) -> type[argparse.Action]:
+    # A custom nargs=0 Action (mirroring argparse's own -h) rather than
+    # add_help's default: that default calls parser.print_help(), which uses
+    # RichHelpFormatter's two-column wrapped-text layout - the exact "wall of
+    # text" this replaces with a real Rich table. Must subclass Action (not
+    # store_true) so help still short-circuits before path_or_url's
+    # required-positional check, same as real -h does.
+    class _ScanHelpAction(argparse.Action):
+        def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, help=None):
+            super().__init__(option_strings=option_strings, dest=dest, default=default, nargs=0, help=help)
+
+        def __call__(self, parser, namespace, values, option_string=None):
+            _print_scan_help(console, parser)
+            parser.exit()
+
+    return _ScanHelpAction
 
 
-SCAN_EPILOG = _build_scan_epilog()
+def _print_scan_help(console: Console, parser: argparse.ArgumentParser) -> None:
+    console.print(parser.format_usage().strip())
+    console.print()
+    if parser.description:
+        console.print(parser.description)
+        console.print()
+
+    format_invocation = argparse.HelpFormatter(parser.prog)._format_action_invocation
+    table = Table(show_header=True, header_style="bold cyan", border_style="dim", pad_edge=True, expand=False)
+    table.add_column("Flag")
+    table.add_column("Description", ratio=1, overflow="fold")
+    first_group = True
+    for group in parser._action_groups:
+        actions = [a for a in group._group_actions if a.help != argparse.SUPPRESS]
+        if not actions:
+            continue
+        if not first_group:
+            table.add_section()
+        first_group = False
+        table.add_row(Text(f"{(group.title or '').capitalize()}:", style="bold cyan"), "")
+        for action in actions:
+            table.add_row(format_invocation(action), action.help or "")
+    console.print(table)
+    console.print()
+
+    console.print("Examples:", style="bold cyan")
+    examples = Table.grid(padding=(0, 2))
+    examples.add_column(style="cyan", no_wrap=True)
+    examples.add_column(style="dim")
+    for cmd, blurb in _SCAN_EXAMPLES:
+        examples.add_row(cmd, f"# {blurb}")
+    console.print(examples)
+    console.print()
+
+    console.print("Exit codes:", style="bold cyan")
+    codes = Table.grid(padding=(0, 2))
+    codes.add_column(justify="right", style="bold")
+    codes.add_column()
+    for code, meaning in _EXIT_CODES:
+        codes.add_row(str(code), meaning)
+    console.print(codes)
+    console.print()
+    console.print(_EXIT_CODES_NOTE, style="dim")
 
 
 def _common_flags_parser() -> argparse.ArgumentParser:
@@ -121,7 +177,7 @@ def _common_flags_parser() -> argparse.ArgumentParser:
     return common
 
 
-def _build_arg_parser() -> argparse.ArgumentParser:
+def _build_arg_parser(*, no_color: bool = False) -> argparse.ArgumentParser:
     common = _common_flags_parser()
     parser = argparse.ArgumentParser(
         prog="skilltrace",
@@ -139,8 +195,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "scan",
         help="Scan a skill directory or git URL",
         parents=[common],
-        formatter_class=RawDescriptionRichHelpFormatter,
-        epilog=SCAN_EPILOG,
+        formatter_class=RichHelpFormatter,
+        add_help=False,
+    )
+    scan.add_argument(
+        "-h",
+        "--help",
+        action=_make_scan_help_action(make_console(stderr=False, no_color=no_color)),
+        help="show this help message and exit",
     )
     scan.add_argument("path_or_url", help="Local path to a skill directory, or a git URL")
 
@@ -519,11 +581,10 @@ def main(argv: list[str] | None = None) -> int:
     # prior no-color override in place would leak into later main() calls in
     # the same process (e.g. across tests) that didn't pass --no-color.
     argv_list = list(sys.argv[1:]) if argv is None else list(argv)
-    RichHelpFormatter.console = (
-        Console(no_color=True, color_system=None) if "--no-color" in argv_list else Console()
-    )
+    no_color = "--no-color" in argv_list
+    RichHelpFormatter.console = Console(no_color=True, color_system=None) if no_color else Console()
 
-    parser = _build_arg_parser()
+    parser = _build_arg_parser(no_color=no_color)
     args = parser.parse_args(argv)
 
     # After parse_args(): -h/--help exits during parsing, so this naturally
