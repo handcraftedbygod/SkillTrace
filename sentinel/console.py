@@ -507,10 +507,12 @@ def print_scan_complete(
     grid.add_row("Files scanned:", str(files_scanned))
     total_findings = sum(findings_by_severity.values())
     grid.add_row("Findings:", str(total_findings))
-    for severity in (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW):
-        count = findings_by_severity.get(severity, 0)
-        if count:
-            grid.add_row(f"  {severity.value.upper()}:", Text(str(count), style=SEVERITY_STYLE[severity]))
+    if total_findings:
+        grid.add_row("", "")
+        for severity in (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW):
+            count = findings_by_severity.get(severity, 0)
+            if count:
+                grid.add_row(f"{severity.value.capitalize()} severity:", Text(str(count), style=SEVERITY_STYLE[severity]))
     if animation_s > 0:
         # --static can genuinely finish in single-digit milliseconds — split
         # out so the reported time doesn't quietly include deliberate pacing

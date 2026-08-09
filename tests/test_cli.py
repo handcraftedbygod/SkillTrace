@@ -160,9 +160,9 @@ def test_scan_complete_summary_reports_files_and_findings(capsys):
     assert "Skills scanned:" in err
     assert "Files scanned:" in err
     # pdf-formatter's own fixture always scores 3 findings across CRITICAL/HIGH/MEDIUM.
-    assert "CRITICAL:" in err
-    assert "HIGH:" in err
-    assert "MEDIUM:" in err
+    assert "Critical severity:" in err
+    assert "High severity:" in err
+    assert "Medium severity:" in err
     # --static's animation pacing only applies on a real terminal (see
     # cli.py's animate_static) - a non-interactive run like this one (capsys
     # isn't a tty) must not be slowed down by it or show a fake time split.
