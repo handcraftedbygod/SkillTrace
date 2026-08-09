@@ -308,7 +308,7 @@ def test_render_html_multi_shows_summary_table_and_per_skill_sections():
     output = render_html_multi(reports)
     assert "2 skills" in output
     assert '<table class="summary">' in output
-    assert output.count("<details>") == 2
+    assert output.count("<details") == 2
     assert "skill-a" in output
     assert "skill-b" in output
 

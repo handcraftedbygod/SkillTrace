@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import base64
 import html
+import importlib.metadata
 import json
 import posixpath
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sentinel.findings import Confidence, Finding, Severity
@@ -650,28 +653,68 @@ SEVERITY_COLOR = {
     "critical": "#e53935",
 }
 
+PROJECT_URL = "https://github.com/handcraftedbygod/SkillTrace"
+
+
+def _package_version() -> str:
+    # Not sentinel.__version__: that's a hand-maintained string in
+    # __init__.py that's drifted out of sync with pyproject.toml before
+    # (see sentinel.console's own _package_version, which this mirrors
+    # rather than imports — importing from console would be circular,
+    # since console.py already imports from this module).
+    try:
+        return importlib.metadata.version("skilltrace")
+    except importlib.metadata.PackageNotFoundError:
+        return "dev"
+
+
+# Hardcoded dark, not `color-scheme: light dark` deferring to the OS/browser
+# — a report opened on an otherwise light-themed machine rendered fully
+# white, clashing with every other SkillTrace surface (terminal, demo/README
+# screenshots), which are all dark. GitHub-dark-ish palette, both because
+# it reads well and because it matches the project's own GitHub presence
+# linked from the masthead below.
 HTML_STYLE = """<style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --bg-alt: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --link: #58a6ff;
+  }
   body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; max-width: 900px;
-         margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
-  h1 { font-size: 1.5rem; }
-  h2 { font-size: 1.25rem; border-bottom: 1px solid rgba(128,128,128,.4); padding-bottom: .25rem; }
+         margin: 2rem auto; padding: 0 1rem 3rem; line-height: 1.5;
+         background: var(--bg); color: var(--text); }
+  a { color: var(--link); }
+  h1 { font-size: 1.6rem; margin-bottom: .25rem; }
+  h2 { font-size: 1.25rem; border-bottom: 1px solid var(--border); padding-bottom: .25rem; }
   h3 { font-size: 1rem; margin-bottom: .5rem; }
+  .masthead { color: var(--text-dim); font-size: .85rem; margin: 0 0 1.5rem; }
+  .masthead a { color: var(--text-dim); text-decoration: none; font-weight: 600; }
+  .masthead a:hover { color: var(--link); }
   .risk-badge { display: inline-block; color: #fff; font-weight: 700; padding: .25rem .75rem;
                 border-radius: .25rem; margin: .5rem 0; }
+  .stats { margin: .75rem 0 1.25rem; }
   .finding { border-left: 4px solid #888; padding: .5rem .75rem; margin: .5rem 0;
-             background: rgba(128,128,128,.08); border-radius: 0 .25rem .25rem 0; }
+             background: var(--bg-alt); border: 1px solid var(--border); border-left-width: 4px;
+             border-radius: 0 .25rem .25rem 0; }
   .badge { display: inline-block; color: #fff; font-size: .75rem; font-weight: 700;
            padding: .1rem .4rem; border-radius: .2rem; margin-right: .5rem; }
   .detail { font-family: ui-monospace, monospace; font-size: .85rem; margin-top: .25rem;
-            opacity: .8; word-break: break-all; }
-  .source { font-size: .8rem; opacity: .6; margin-top: .25rem; }
-  .empty { opacity: .6; font-style: italic; }
-  .description { opacity: .8; }
-  .invocations code { background: rgba(128,128,128,.15); padding: .1rem .3rem; border-radius: .2rem; }
+            color: var(--text-dim); word-break: break-all; }
+  .source { font-size: .8rem; color: var(--text-dim); margin-top: .25rem; }
+  .empty { color: var(--text-dim); font-style: italic; }
+  .description { color: var(--text-dim); }
+  .invocations code { background: var(--bg-alt); border: 1px solid var(--border);
+                       padding: .1rem .3rem; border-radius: .2rem; }
   table.summary { width: 100%; border-collapse: collapse; margin: 1rem 0; }
   table.summary th, table.summary td { text-align: left; padding: .4rem .6rem;
-                                        border-bottom: 1px solid rgba(128,128,128,.25); }
+                                        border-bottom: 1px solid var(--border); }
+  table.summary th { color: var(--text-dim); font-weight: 600; }
+  table.summary tbody tr:hover { background: var(--bg-alt); }
+  details { border: 1px solid var(--border); border-radius: .25rem; margin: .5rem 0; padding: 0 .75rem; }
   details > summary { cursor: pointer; font-weight: 600; padding: .5rem 0; }
 </style>"""
 
@@ -746,6 +789,26 @@ def _report_body_html(report: Report) -> str:
     )
 
 
+def _masthead_html(reports: list[Report]) -> str:
+    generated = datetime.fromtimestamp(reports[0].generated_at, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return (
+        '<p class="masthead">'
+        f'<a href="{PROJECT_URL}">\U0001f6e1️ SkillTrace</a> '
+        f"v{html.escape(_package_version())} &middot; generated {generated}"
+        "</p>"
+    )
+
+
+def _severity_stats_html(reports: list[Report]) -> str:
+    counts = Counter(r.risk_level for r in reports)
+    chips = "".join(
+        f'<span class="badge" style="background:{SEVERITY_COLOR[level.value]}">{counts[level]} {level.value.upper()}</span>'
+        for level in (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW)
+        if counts[level]
+    )
+    return f'<p class="stats">{chips}</p>'
+
+
 def render_html(report: Report) -> str:
     return render_html_multi([report])
 
@@ -754,10 +817,11 @@ def render_html_multi(reports: list[Report]) -> str:
     """A repo with one skill renders as a single full report; a collection repo
     renders a summary table plus a collapsible <details> section per skill —
     plain HTML, no JavaScript, so it still works as a static CI artifact."""
+    masthead = _masthead_html(reports)
     if len(reports) == 1:
         r = reports[0]
         title = r.skill_name or r.skill_path
-        body = f"<h1>{html.escape(title)}</h1>{_report_body_html(r)}"
+        body = f"<h1>{html.escape(title)}</h1>{masthead}{_report_body_html(r)}"
     else:
         title = f"SkillTrace: {len(reports)} skills"
         worst = collection_risk(reports)
@@ -766,23 +830,28 @@ def render_html_multi(reports: list[Report]) -> str:
             f"Overall: {worst.risk_level.value.upper()} ({worst.risk_score}), driven by "
             f"{html.escape(worst.skill_name or worst.skill_path)}</div>"
             f'<p class="description">{html.escape(risk_guidance(worst))}</p>'
+            f"{_severity_stats_html(reports)}"
         )
+        # Worst-first, matching collection_risk's own sort key: a reviewer
+        # opening this report wants the riskiest skills at the top of both
+        # the table and the <details> list, not buried in discovery order.
+        ranked = sorted(reports, key=lambda r: (r.risk_level.rank, r.risk_score), reverse=True)
         rows = "".join(
             f"<tr><td>{html.escape(r.skill_name or r.skill_path)}</td>"
             f'<td><span class="badge" style="background:{SEVERITY_COLOR[r.risk_level.value]}">'
             f"{r.risk_level.value.upper()}</span></td><td>{r.risk_score}</td></tr>"
-            for r in reports
+            for r in ranked
         )
         summary_table = (
             '<table class="summary"><thead><tr><th>Skill</th><th>Risk</th><th>Score</th></tr>'
             f"</thead><tbody>{rows}</tbody></table>"
         )
         details = "".join(
-            f"<details><summary>{html.escape(r.skill_name or r.skill_path)} — "
+            f"<details{' open' if r is ranked[0] else ''}><summary>{html.escape(r.skill_name or r.skill_path)} — "
             f"{r.risk_level.value.upper()} ({r.risk_score})</summary>{_report_body_html(r)}</details>"
-            for r in reports
+            for r in ranked
         )
-        body = f"<h1>{html.escape(title)}</h1>{overall_risk}{summary_table}{details}"
+        body = f"<h1>{html.escape(title)}</h1>{masthead}{overall_risk}{summary_table}{details}"
 
     return (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
