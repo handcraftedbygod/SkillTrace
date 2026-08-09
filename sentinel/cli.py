@@ -119,7 +119,10 @@ def _print_scan_help(console: Console, parser: argparse.ArgumentParser) -> None:
     # anyway, so the synopsis only needs to show the invocation shape, which is
     # short enough to never wrap.
     positionals = " ".join(format_invocation(a) for a in parser._get_positional_actions())
-    console.print(f"Usage: {parser.prog} [OPTIONS] {positionals}", style="bold cyan")
+    # A leading blank line so this doesn't sit flush under the typed command
+    # and blend with it - visually grouped with the table below instead.
+    console.print()
+    console.print(Text("Usage: ", style="bold cyan") + Text(f"{parser.prog} [OPTIONS] {positionals}"))
     console.print()
     if parser.description:
         console.print(parser.description)
