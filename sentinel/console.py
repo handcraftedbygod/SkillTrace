@@ -243,6 +243,12 @@ def _build_progress_table(rows: list[SkillProgress]) -> Table:
             risk_text = Text("·", style="dim")
         if row.status == "Scanning" and row.creep_start is not None:
             progress_cell = _CreepingProgressBar(row.creep_start)
+        elif row.status == "Done" and row.files_total == 0:
+            # A finished skill with no bundled files never advances
+            # files_done/files_total past 0/0 - _progress_cell(0, 0) would
+            # read that as "no fractional signal" and show "·" forever,
+            # even though the scan is complete. Show a full bar instead.
+            progress_cell = _progress_cell(1, 1)
         else:
             progress_cell = _progress_cell(row.files_done, row.files_total)
         table.add_row(row.name, _status_cell(row), files_text, issues_text, risk_text, progress_cell)
