@@ -546,7 +546,7 @@ def print_scan_complete(
     if animation_s > 0:
         # --static can genuinely finish in single-digit milliseconds — split
         # out so the reported time doesn't quietly include deliberate pacing
-        # (see cli.py's STATIC_ANIMATION_DWELL_S) as if it were real scan work.
+        # (see cli.py's STATIC_ANIMATION_BUDGET_S) as if it were real scan work.
         grid.add_row("Scan time:", f"{max(elapsed_s - animation_s, 0):.2f}s")
         grid.add_row("Animation time:", f"{animation_s:.2f}s")
     else:

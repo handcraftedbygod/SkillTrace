@@ -61,12 +61,12 @@ DEFAULT_HTML_REPORT = "skilltrace-report.html"
 
 # --static can genuinely finish scanning a small skill in single-digit
 # milliseconds — real per-file progress at that speed reads as a single
-# instant jump to 100% rather than motion. STATIC_ANIMATION_DWELL_S floors
-# how little time passes between file updates so it's actually visible;
-# STATIC_ANIMATION_BUDGET_S caps how much total wall-clock time this adds
-# across the whole scan, so a large collection isn't padded into a crawl —
-# once spent, remaining files advance at full real speed.
-STATIC_ANIMATION_DWELL_S = 0.09
+# instant jump to 100% rather than motion. STATIC_ANIMATION_BUDGET_S is
+# spread evenly, in _run_scan, across every visible progress "tick" in the
+# scan (one per bundled file, or one for a file-less skill that would
+# otherwise flash straight to Done) — so the live table visibly fills over
+# ~2s of real scanning, ending exactly when the last skill finishes,
+# rather than a lump wait tacked on at the end.
 STATIC_ANIMATION_BUDGET_S = 2.0
 
 _SCAN_EXAMPLES = [
@@ -324,6 +324,26 @@ def _run_scan(args: argparse.Namespace) -> int:
         # "done/total" — including still-Queued ones — from the very first
         # frame, instead of totals only appearing once each skill starts.
         bundled_files_by_dir = {d: discover_bundled_files(d) for d in skill_dirs}
+        # A file-less skill (pure prose, no bundled scripts) still counts as
+        # one tick - otherwise a collection weighted toward those flashes
+        # through with almost nothing to pace, and the budget either does
+        # nothing (per earlier fixed-dwell design) or lands as a frozen
+        # 100%-and-wait tail (per an earlier fix attempt at this exact
+        # problem). Spreading the whole budget evenly across every tick
+        # keeps the table visibly filling for the entire scan instead.
+        total_ticks = sum(max(1, len(bundled_files_by_dir[d])) for d in skill_dirs)
+        per_tick_dwell = STATIC_ANIMATION_BUDGET_S / total_ticks if total_ticks else 0.0
+
+        def _pace_tick() -> None:
+            nonlocal animation_time_s, last_file_time
+            if animate_static and animation_time_s < STATIC_ANIMATION_BUDGET_S:
+                since_last = time.time() - last_file_time
+                if since_last < per_tick_dwell:
+                    pad = per_tick_dwell - since_last
+                    time.sleep(pad)
+                    animation_time_s += pad
+            last_file_time = time.time()
+
         # A collection scan gets a live-updating progress table on a real
         # terminal; everything else (non-TTY/CI, --quiet, or a single skill)
         # keeps the plain print-line fallback below.
@@ -374,15 +394,9 @@ def _run_scan(args: argparse.Namespace) -> int:
                     stderr_console.print(f"[{idx}/{total}] scanning {skill_label}...")
 
                 def _on_file(filename: str, running_issues: int) -> None:
-                    nonlocal total_files_scanned, animation_time_s, last_file_time
+                    nonlocal total_files_scanned
                     total_files_scanned += 1
-                    if animate_static and animation_time_s < STATIC_ANIMATION_BUDGET_S:
-                        since_last = time.time() - last_file_time
-                        if since_last < STATIC_ANIMATION_DWELL_S:
-                            pad = STATIC_ANIMATION_DWELL_S - since_last
-                            time.sleep(pad)
-                            animation_time_s += pad
-                    last_file_time = time.time()
+                    _pace_tick()
                     if progress:
                         progress.advance_file(idx - 1, running_issues)
                     else:
@@ -395,6 +409,12 @@ def _run_scan(args: argparse.Namespace) -> int:
                     stderr_console, len(bundled_files), quiet=args.quiet or progress is not None
                 ) as advance_file:
                     heuristic_findings = run_heuristics(skill_dir, metadata, on_file=_on_file)
+                if not bundled_files:
+                    # _on_file above never fires for a file-less (pure prose)
+                    # skill - give it the one tick it was budgeted for anyway,
+                    # while it's still shown as "Scanning" (spinner/creep bar
+                    # animating), not after the row's already settled on Done.
+                    _pace_tick()
 
                 if raw_directory_scan:
                     heuristic_findings = heuristic_findings + [
@@ -502,19 +522,6 @@ def _run_scan(args: argparse.Namespace) -> int:
                     progress.finish(idx - 1, report.risk_level, report.risk_score, len(report.findings))
                 elif total > 1 and not args.quiet:
                     stderr_console.print(f"    -> {report.risk_level.value.upper()} ({report.risk_score})")
-
-            # The per-file dwelling above only pads while files are actually
-            # being scanned - a collection weighted toward file-less
-            # (pure-prose) skills can finish with almost none of the budget
-            # spent, making the whole animation flash by in well under a
-            # second. Top off the remainder in one sleep here, while the
-            # live progress table (still showing its final 100% state) is
-            # still on screen, so a static scan reliably takes close to
-            # STATIC_ANIMATION_BUDGET_S regardless of how many files existed.
-            if animate_static and animation_time_s < STATIC_ANIMATION_BUDGET_S:
-                tail_pad = STATIC_ANIMATION_BUDGET_S - animation_time_s
-                time.sleep(tail_pad)
-                animation_time_s += tail_pad
 
         if not reports:
             print_error(stderr_console, f"No valid SKILL.md could be parsed under {source_dir}")
