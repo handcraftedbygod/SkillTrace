@@ -7,9 +7,11 @@ run_skill_in_sandbox for the two Docker-dependent failure paths.
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 import sentinel.cli as cli
 from sentinel.cli import main
@@ -168,6 +170,22 @@ def test_scan_complete_summary_reports_files_and_findings(capsys):
     # isn't a tty) must not be slowed down by it or show a fake time split.
     assert "Time:" in err
     assert "Animation time:" not in err
+
+
+def test_static_animation_reaches_full_budget_even_with_file_less_skills(monkeypatch, tmp_path, capsys):
+    # Both fixture skills are pure SKILL.md with no bundled files - the
+    # per-file dwell pacing has nothing to pad against, reproducing the bug
+    # where a collection weighted toward file-less skills finished the
+    # "animation" in well under a second instead of the intended budget.
+    monkeypatch.setattr(cli, "STATIC_ANIMATION_BUDGET_S", 0.2)
+    monkeypatch.setattr(Console, "is_terminal", property(lambda self: True))
+    _write_collection(tmp_path)
+    exit_code = main(["scan", str(tmp_path), "--static", "--no-color"])
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    match = re.search(r"Animation time:\s+([\d.]+)s", err)
+    assert match, err
+    assert float(match.group(1)) >= 0.18
 
 
 def test_report_write_failure_warns_but_does_not_fail_the_scan(capsys):

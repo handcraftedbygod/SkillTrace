@@ -503,6 +503,19 @@ def _run_scan(args: argparse.Namespace) -> int:
                 elif total > 1 and not args.quiet:
                     stderr_console.print(f"    -> {report.risk_level.value.upper()} ({report.risk_score})")
 
+            # The per-file dwelling above only pads while files are actually
+            # being scanned - a collection weighted toward file-less
+            # (pure-prose) skills can finish with almost none of the budget
+            # spent, making the whole animation flash by in well under a
+            # second. Top off the remainder in one sleep here, while the
+            # live progress table (still showing its final 100% state) is
+            # still on screen, so a static scan reliably takes close to
+            # STATIC_ANIMATION_BUDGET_S regardless of how many files existed.
+            if animate_static and animation_time_s < STATIC_ANIMATION_BUDGET_S:
+                tail_pad = STATIC_ANIMATION_BUDGET_S - animation_time_s
+                time.sleep(tail_pad)
+                animation_time_s += tail_pad
+
         if not reports:
             print_error(stderr_console, f"No valid SKILL.md could be parsed under {source_dir}")
             return 2
