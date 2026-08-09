@@ -143,22 +143,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         epilog=SCAN_EPILOG,
     )
     scan.add_argument("path_or_url", help="Local path to a skill directory, or a git URL")
-    scan.add_argument("--invoke", metavar="CMD", help="An explicit command to run inside the sandbox")
-    scan.add_argument(
+
+    behavior = scan.add_argument_group("Scan behavior")
+    behavior.add_argument("--invoke", metavar="CMD", help="An explicit command to run inside the sandbox")
+    behavior.add_argument(
         "--allow-network",
         action="store_true",
         help="Allow real network egress instead of the DNS/TLS sinkhole (no decrypted traffic visibility this run)",
     )
-    scan.add_argument("--json", action="store_true", help="Output the report as JSON instead of Markdown")
-    scan.add_argument("--timeout", type=int, default=60, help="Per-invocation sandbox timeout in seconds")
-    scan.add_argument("-o", "--output", metavar="FILE", help="Write the report to FILE instead of stdout")
-    scan.add_argument(
-        "--fail-threshold",
-        choices=FAIL_THRESHOLD_CHOICES,
-        default=None,
-        help="Exit non-zero if risk is at or above this severity (for CI gating)",
-    )
-    scan.add_argument(
+    behavior.add_argument("--timeout", type=int, default=60, help="Per-invocation sandbox timeout in seconds")
+    behavior.add_argument(
         "--static",
         "--no-sandbox",
         dest="no_sandbox",
@@ -166,24 +160,36 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Static-only scan: skip the Docker sandbox, heuristics only (no Docker required; "
         "--no-sandbox is a kept alias)",
     )
-    scan.add_argument(
-        "--semantic-review",
-        action="store_true",
-        help="Send skill instructions to Claude for adversarial review (one API call per "
-        "skill, needs ANTHROPIC_API_KEY, opt-in)",
+    behavior.add_argument(
+        "--fail-threshold",
+        choices=FAIL_THRESHOLD_CHOICES,
+        default=None,
+        help="Exit non-zero if risk is at or above this severity (for CI gating)",
     )
-    scan.add_argument(
-        "--differential",
-        action="store_true",
-        help="Re-run with a varied hostname/env and flag behavior that differs — a real "
-        "sandbox-evasion signal (opt-in, ~2x runtime)",
-    )
-    scan.add_argument(
+
+    output = scan.add_argument_group("Output")
+    output.add_argument("--json", action="store_true", help="Output the report as JSON instead of Markdown")
+    output.add_argument("-o", "--output", metavar="FILE", help="Write the report to FILE instead of stdout")
+    output.add_argument(
         "--html",
         metavar="FILE",
         nargs="?",
         const=DEFAULT_HTML_REPORT,
         help=f"Also write a self-contained HTML report to FILE (default: {DEFAULT_HTML_REPORT})",
+    )
+
+    advanced = scan.add_argument_group("Advanced (opt-in)")
+    advanced.add_argument(
+        "--semantic-review",
+        action="store_true",
+        help="Send skill instructions to Claude for adversarial review (one API call per "
+        "skill, needs ANTHROPIC_API_KEY, opt-in)",
+    )
+    advanced.add_argument(
+        "--differential",
+        action="store_true",
+        help="Re-run with a varied hostname/env and flag behavior that differs — a real "
+        "sandbox-evasion signal (opt-in, ~2x runtime)",
     )
 
     return parser
