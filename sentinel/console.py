@@ -28,7 +28,7 @@ from rich.table import Table
 from rich.text import Text
 
 from sentinel.findings import Severity
-from sentinel.report import Report, collection_risk, risk_guidance
+from sentinel.report import DIAGNOSTIC_CATEGORIES, Report, collection_risk, risk_guidance
 
 SEVERITY_STYLE = {
     Severity.LOW: "green",
@@ -473,6 +473,19 @@ def print_summary_table(console: Console, reports: list[Report]) -> None:
         style=SEVERITY_STYLE.get(worst.risk_level),
     )
     console.print(risk_guidance(worst), style="white")
+
+    real_findings = sorted(
+        (f for f in worst.findings if f.category not in DIAGNOSTIC_CATEGORIES),
+        key=lambda f: f.severity.rank,
+        reverse=True,
+    )
+    if real_findings:
+        shown = real_findings[:3]
+        console.print()
+        console.print(_findings_table(shown))
+        remaining = len(real_findings) - len(shown)
+        if remaining > 0:
+            console.print(f"...and {remaining} more finding(s) for {worst.skill_name or worst.skill_path} — see the full report.", style="dim")
 
 
 def print_reports_generated(console: Console, *, html: str, json: str, markdown: str) -> None:

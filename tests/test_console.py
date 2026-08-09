@@ -137,6 +137,42 @@ def test_summary_table_shows_overall_risk_score_and_guidance():
     assert risk_guidance(critical_report) in out
 
 
+def test_summary_table_elaborates_on_the_worst_skills_findings():
+    critical_report = _report("bad thing", "dangerous-skill")
+    critical_report.risk_score = 30
+    critical_report.risk_level = Severity.CRITICAL
+
+    console, buf = _console(no_color=True)
+    print_summary_table(console, [critical_report])
+    out = buf.getvalue()
+    assert "bad thing" in out
+
+
+def test_summary_table_caps_elaboration_and_notes_the_remainder():
+    many_findings = [
+        Finding(category="network_request", severity=Severity.CRITICAL, summary=f"finding {i}")
+        for i in range(5)
+    ]
+    critical_report = Report(
+        skill_path="/tmp/skill",
+        skill_name="dangerous-skill",
+        skill_description="A test skill.",
+        findings=many_findings,
+        risk_score=30,
+        risk_level=Severity.CRITICAL,
+        invocations=["python run.py"],
+    )
+
+    console, buf = _console(no_color=True)
+    print_summary_table(console, [critical_report])
+    out = buf.getvalue()
+    assert "finding 0" in out
+    assert "finding 1" in out
+    assert "finding 2" in out
+    assert "finding 3" not in out
+    assert "...and 2 more finding(s) for dangerous-skill" in out
+
+
 def test_collection_progress_transitions_and_shows_file_progress():
     console, buf = _console(no_color=True)
     with CollectionProgress(console, ["skill-a", "skill-b", "skill-c"], [4, 3, 2]) as progress:
