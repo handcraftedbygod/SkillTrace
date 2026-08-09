@@ -17,6 +17,7 @@ import importlib.metadata
 import math
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from time import monotonic
 
 from rich.console import Console
@@ -488,17 +489,33 @@ def print_summary_table(console: Console, reports: list[Report]) -> None:
             console.print(f"...and {remaining} more finding(s) for {worst.skill_name or worst.skill_path} — see the full report.", style="dim")
 
 
+def file_link(path: str) -> Text:
+    # A real OSC-8 hyperlink, not markup=True: the path string is ours (an
+    # auto-generated report filename), never attacker-controlled skill
+    # content, so this doesn't run into the injection risk markup=False
+    # guards against elsewhere in this module - it never touches Rich's
+    # bracket-markup parser at all. Falls back to plain text for a path
+    # Path.as_uri() can't handle (e.g. relative to a missing drive on
+    # Windows) rather than crash the report we're just trying to announce.
+    try:
+        uri = Path(path).resolve().as_uri()
+    except (ValueError, OSError):
+        return Text(path)
+    return Text(path, style=f"link {uri}")
+
+
 def print_reports_generated(console: Console, *, html: str, json: str, markdown: str) -> None:
     # Not gated on --quiet, same reasoning as the existing --html "written to"
     # line: this is the only record of where the auto-written files landed.
     console.print()
     console.print("Reports generated:", style="bold")
+    console.print("Click a path below to open it — HTML gives the full interactive report.", style="dim")
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="cyan")
     grid.add_column()
-    grid.add_row("HTML", html)
-    grid.add_row("JSON", json)
-    grid.add_row("Markdown", markdown)
+    grid.add_row("HTML", file_link(html))
+    grid.add_row("JSON", file_link(json))
+    grid.add_row("Markdown", file_link(markdown))
     console.print(grid)
 
 

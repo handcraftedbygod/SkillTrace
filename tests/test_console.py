@@ -9,9 +9,11 @@ from rich.console import Console
 from sentinel.console import (
     CollectionProgress,
     busy_status,
+    file_link,
     file_scan_progress,
     maybe_print_banner,
     print_report,
+    print_reports_generated,
     print_scan_complete,
     print_summary_table,
     print_welcome,
@@ -354,3 +356,34 @@ def test_file_scan_progress_does_not_interpret_bracket_markup_in_filename():
     with file_scan_progress(console, 1, quiet=False) as advance:
         advance("[bold red]evil[/bold red].py")
     assert "[bold red]evil[/bold red].py" in buf.getvalue()
+
+
+def _link_console():
+    # legacy_windows=False, forced color_system: Rich's auto color-system
+    # detection falls back to the legacy Windows console renderer (which
+    # silently drops OSC-8 hyperlinks) whenever it can't confirm a real
+    # VT-capable terminal - true in this sandboxed test process even though
+    # a real Windows Terminal session, like a user actually running
+    # skilltrace, is correctly detected and unaffected.
+    buf = io.StringIO()
+    console = Console(
+        file=buf, force_terminal=True, legacy_windows=False, width=200, color_system="truecolor", markup=False
+    )
+    return console, buf
+
+
+def test_file_link_wraps_path_in_an_osc8_hyperlink():
+    link = file_link("sentinel/console.py")
+    assert link.style.startswith("link file://")
+    assert link.style.endswith("sentinel/console.py")
+    assert str(link) == "sentinel/console.py"
+
+
+def test_reports_generated_links_are_clickable_and_guide_the_user():
+    console, buf = _link_console()
+    print_reports_generated(console, html="a.html", json="a.json", markdown="a.md")
+    out = buf.getvalue()
+    assert "Reports generated:" in out
+    assert "Click a path below to open it" in out
+    assert "\x1b]8;" in out
+    assert "a.html" in out

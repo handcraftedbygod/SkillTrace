@@ -20,6 +20,7 @@ from rich_argparse import RichHelpFormatter
 from sentinel.console import (
     CollectionProgress,
     busy_status,
+    file_link,
     file_scan_progress,
     make_console,
     maybe_print_banner,
@@ -511,7 +512,7 @@ def _run_scan(args: argparse.Namespace) -> int:
         # Not gated on --quiet: the only indication of where --html's output
         # landed (the filename can be an implicit default), so it's useful
         # signal rather than progress noise.
-        stderr_console.print(f"HTML report written to {args.html}")
+        stderr_console.print(Text("HTML report written to ") + file_link(args.html))
 
     if args.output:
         output = render_json_multi(reports) if args.json else render_markdown_multi(reports)
