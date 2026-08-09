@@ -472,7 +472,8 @@ def risk_guidance(report: Report) -> str:
     if not real_findings:
         categories = sorted({f.category for f in report.findings})
         explanations = [DIAGNOSTIC_EXPLANATIONS.get(c, "coverage was limited") for c in categories]
-        return f"No malicious behavior found — {'; '.join(explanations)}."
+        verdict = _RISK_LEVEL_VERDICT[report.risk_level]
+        return f"No malicious behavior found — {'; '.join(explanations)}. {verdict[0].upper()}{verdict[1:]}."
     return f"Flagged for {_labels_for(real_findings)} — {_RISK_LEVEL_VERDICT[report.risk_level]}."
 
 
