@@ -438,15 +438,70 @@ NEGATION_RE = re.compile(
 
 PROSE_INSTRUCTION_EXTENSIONS = {".md", ".txt"}
 
+# ZWJ (U+200D) and ZWNJ (U+200C) are deliberately excluded: both have real
+# legitimate uses this would otherwise false-positive on — ZWJ joins emoji into
+# compound sequences (e.g. a "person + laptop" emoji in a skill's own
+# description), ZWNJ is required for correct letter shaping in Arabic/Persian/
+# Indic scripts.
+_INVISIBLE_UNICODE_NAMES = {
+    "​": "zero-width space (U+200B)",
+    "⁠": "word joiner (U+2060)",
+    "﻿": "byte-order mark (U+FEFF)",
+    "‪": "left-to-right embedding (U+202A)",
+    "‫": "right-to-left embedding (U+202B)",
+    "‬": "pop directional formatting (U+202C)",
+    "‭": "left-to-right override (U+202D)",
+    "‮": "right-to-left override (U+202E)",
+    "⁦": "left-to-right isolate (U+2066)",
+    "⁧": "right-to-left isolate (U+2067)",
+    "⁨": "first-strong isolate (U+2068)",
+    "⁩": "pop directional isolate (U+2069)",
+}
+
+# U+E0000-U+E007F: invisible "tag" characters, each mapped 1:1 onto an ASCII
+# code point (U+E0041 = "A", etc). Renders as nothing in virtually every font,
+# yet decodes straight back to a full ASCII message - the actual mechanism
+# behind "ASCII smuggling" prompt-injection attacks, and the only entry in
+# this check that can hide a genuinely readable clause rather than just a
+# single disruptive/disguising character.
+_UNICODE_TAG_RANGE = range(0xE0000, 0xE0080)
+
+
+def _hidden_unicode_hit(line: str) -> str | None:
+    for char, name in _INVISIBLE_UNICODE_NAMES.items():
+        if char in line:
+            return name
+    if any(ord(c) in _UNICODE_TAG_RANGE for c in line):
+        return 'Unicode tag characters (U+E0000 block, "ASCII smuggling")'
+    return None
+
 
 def scan_text_for_prose_instructions(text: str, source: str) -> list[Finding]:
     """Flag inline shell commands in prose (SKILL.md or a referenced .md/.txt
     file) — not a bundled script — that decode a blob into a shell, pipe a
     remote download straight into a shell/interpreter, or gather
     system-identifying info (via command substitution or a crafted hostname)
-    and send it outbound, on the same line."""
+    and send it outbound, on the same line. Also flags invisible/bidi Unicode
+    characters hiding a clause from a human reviewer."""
     findings: list[Finding] = []
+    # A single leading BOM is a common, benign file-encoding artifact, not hidden
+    # content — strip it before scanning so it isn't flagged, while one buried
+    # mid-text still is.
+    text = text.removeprefix("﻿")
     for line_no, line in enumerate(text.splitlines(), start=1):
+        hit = _hidden_unicode_hit(line)
+        if hit is not None:
+            findings.append(
+                Finding(
+                    category="hidden_unicode_content",
+                    severity=Severity.HIGH,
+                    summary=f"Invisible/bidi Unicode character ({hit}) hidden in this "
+                    "text — reads blank or unremarkable to a human reviewer but still "
+                    "parses to the agent",
+                    detail=f"line {line_no}: {repr(line.strip())[:200]}",
+                    source=source,
+                )
+            )
         if NEGATION_RE.search(line):
             continue
         if DECODE_EXEC_PIPE_RE.search(line):

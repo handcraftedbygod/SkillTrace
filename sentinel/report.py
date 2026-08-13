@@ -46,6 +46,7 @@ STATIC_FINDING_CATEGORIES = (
     "skill_md_decode_exec_instruction",
     "frontmatter_broad_tool_grant",
     "frontmatter_sensitive_path_scope",
+    "hidden_unicode_content",
 )
 
 # Confidence: how certain the detection method itself is (deterministic AST/regex
@@ -64,6 +65,7 @@ CATEGORY_METADATA: dict[str, tuple[Confidence, str]] = {
     "skill_md_exfil_instruction": (Confidence.HIGH, "T1041"),
     "frontmatter_broad_tool_grant": (Confidence.MEDIUM, "T1059"),
     "frontmatter_sensitive_path_scope": (Confidence.MEDIUM, "T1552.001"),
+    "hidden_unicode_content": (Confidence.HIGH, "T1027"),
     "sandbox_timeout": (Confidence.HIGH, ""),
     "sandbox_no_trace_data": (Confidence.HIGH, ""),
     "sandbox_not_attempted": (Confidence.HIGH, ""),
@@ -89,6 +91,7 @@ FINDING_CATEGORY_LABELS: dict[str, str] = {
     "skill_md_decode_exec_instruction": "instructions to decode and execute content",
     "frontmatter_broad_tool_grant": "an overly broad tool grant",
     "frontmatter_sensitive_path_scope": "declared access to sensitive file paths",
+    "hidden_unicode_content": "invisible/bidi Unicode characters hidden in skill text",
     "network_request": "unexpected outbound network requests",
     "network_connection": "unexpected outbound connection attempts",
     "out_of_scope_file_access": "file access outside the skill's own directory",
