@@ -17,6 +17,41 @@ Traditional malware scanners inspect code. An agent skill can carry out its enti
 
 For the deeper design rationale behind this (why `strace` over eBPF, why severity and confidence are tracked as separate axes, and an honest accounting of what's actually been validated versus what hasn't), see [`docs/DESIGN.md`](docs/DESIGN.md).
 
+## Goals
+
+**Goal 1:** Catch what static analysis misses — a payload that decodes and runs itself at runtime, or an attack that's pure prose with no code at all.
+**How I know it worked:** CRITICAL (score 25) on the `pdf-formatter` fixture built to reproduce SkillCloak's own attack shape, and correctly flags a real third-party sample ([`snyk-labs/toxicskills-goof`](https://github.com/snyk-labs/toxicskills-goof)) that ships no code at all, only an instruction.
+
+**Goal 2:** Stay usable against real skills, not just its own fixtures — no drowning users in false positives.
+**How I know it worked:** 11,429 real skills scanned across the public ecosystem, zero malicious findings; every miscalibration that surfaced along the way (a DNS-exfil false positive on Anthropic's own release-download URL, an over-broad `frontmatter_broad_tool_grant` check) is [documented and fixed](#real-world-findings), not hidden.
+
+## Contents
+
+- [Why SkillTrace](#why-skilltrace)
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [Demo](#demo)
+- [Threat model](#threat-model)
+- [What it does, vs. static-only tools](#what-it-does-vs-static-only-tools)
+- [Fixture benchmark](#fixture-benchmark)
+- [Architecture](#architecture)
+- [How it works](#how-it-works)
+- [Safety model](#safety-model)
+- [Scope and limitations (v1)](#scope-and-limitations-v1)
+- [CI integration](#ci-integration)
+- [Real-world findings](#real-world-findings)
+  - [Validated against a real malicious sample](#validated-against-a-real-malicious-sample)
+  - [Ecosystem scan (reconstructed, historical)](#ecosystem-scan-reconstructed-historical)
+  - [Fresh scan (reproducible)](#fresh-scan-reproducible)
+  - [A genuine static-analysis limitation, documented rather than patched](#a-genuine-static-analysis-limitation-documented-rather-than-patched)
+- [Explainability](#explainability)
+- [Known false positives / edge cases](#known-false-positives--edge-cases)
+- [Roadmap](#roadmap)
+  - [Aspirational (not committed)](#aspirational-not-committed)
+- [Related work](#related-work)
+- [Security](#security)
+- [License](#license)
+
 ## Why SkillTrace
 
 - 🤝 **Covers Claude, Cursor, and Codex** — all three read the same open `SKILL.md` format, and SkillTrace scans any of them the same way, tool-specific frontmatter fields included (e.g. Cursor's `paths`)
