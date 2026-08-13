@@ -291,6 +291,82 @@ def scan_for_hidden_executable_content(skill_dir: Path) -> list[Finding]:
     return findings
 
 
+# Structural, prefix-based issuer patterns — deterministic, not entropy-based,
+# same confidence class as hidden_executable. A skill shipping a live-looking
+# credential is a real signal either way: a careless leftover test credential
+# (still gets used/exposed if the skill runs) or a deliberate hardcoded
+# exfiltration destination (e.g. a webhook token captured data gets posted to).
+SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("Anthropic API key", re.compile(r"sk-ant-[A-Za-z0-9_-]{20,}")),
+    ("OpenAI API key", re.compile(r"sk-(?!ant-)(?:proj-)?[A-Za-z0-9]{20,}")),
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{22,}")),
+    ("AWS access key ID", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
+    # sk_test_/pk_test_ deliberately excluded: Stripe's own docs commonly embed
+    # test keys directly, a live key is the only real signal here.
+    ("Stripe live key", re.compile(r"(?:sk|rk)_live_[A-Za-z0-9]{20,}")),
+    ("Google API key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
+    ("private key block", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----")),
+]
+
+# The one canonical placeholder every AWS tutorial on earth uses verbatim.
+_KNOWN_PLACEHOLDER_SECRETS = frozenset({"AKIAIOSFODNN7EXAMPLE"})
+
+_PLACEHOLDER_WORDS = (
+    "example", "changeme", "yourkey", "your_key", "your-key",
+    "placeholder", "dummy", "insert", "redacted", "sample",
+)
+
+
+def _looks_like_placeholder(token: str) -> bool:
+    """A real random secret drawn from a 60+ char alphabet over 20+ chars
+    virtually never has fewer than 6 distinct characters — catches
+    XXXXXXXXXXXXXXXXXXXX/00000000000000000000-style filler a documentation
+    placeholder actually produces. The word list catches placeholders with
+    enough character variety to survive that alone (e.g.
+    "your-openai-api-key-here12345678")."""
+    lowered = token.lower()
+    if len(set(lowered)) < 6:
+        return True
+    return any(word in lowered for word in _PLACEHOLDER_WORDS)
+
+
+def scan_file_for_secrets(path: Path) -> list[Finding]:
+    """Flag hardcoded API keys/tokens/private keys in a bundled file.
+
+    Restricted to TEXT_EXTENSIONS, same as scan_file_for_base64_blobs — the
+    threat model is a credential embedded in source/config, not arbitrary
+    bytes. Unlike base64_blob, `detail` never reproduces any part of the
+    matched value: the whole point is not to re-leak a live credential into
+    a report that itself might get shared, uploaded, or committed.
+    """
+    if path.suffix not in TEXT_EXTENSIONS:
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    findings: list[Finding] = []
+    for name, pattern in SECRET_PATTERNS:
+        for match in pattern.finditer(text):
+            token = match.group(0)
+            if token in _KNOWN_PLACEHOLDER_SECRETS or _looks_like_placeholder(token):
+                continue
+            line_no = text.count("\n", 0, match.start()) + 1
+            findings.append(
+                Finding(
+                    category="hardcoded_secret",
+                    severity=Severity.HIGH,
+                    summary=f"{name}-shaped credential hardcoded in {path.name}",
+                    detail=f"line {line_no} (value redacted — a live-looking {name} was "
+                    "found, not reproduced in this report)",
+                    source=str(path),
+                )
+            )
+    return findings
+
+
 # Found via snyk-labs/toxicskills-goof (a third-party security research
 # sample): its "fake Vercel skill" has no code at all — the entire attack is a
 # plain-text "Prerequisites" instruction telling the agent to run
@@ -679,6 +755,7 @@ def run_heuristics(
         findings.extend(scan_file_for_base64_blobs(bundled_file.path))
         findings.extend(scan_file_for_eval_exec_decode(bundled_file.path))
         findings.extend(scan_file_for_prose_instructions(bundled_file.path))
+        findings.extend(scan_file_for_secrets(bundled_file.path))
         if on_file is not None:
             on_file(bundled_file.relative_path, len(findings))
 

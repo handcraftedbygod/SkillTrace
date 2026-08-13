@@ -14,6 +14,7 @@ from sentinel.heuristics import (
     run_heuristics,
     scan_allowed_tools_for_broad_grant,
     scan_file_for_base64_blobs,
+    scan_file_for_secrets,
     scan_paths_for_sensitive_scope,
     scan_text_for_prose_instructions,
 )
@@ -165,6 +166,116 @@ def test_vcr_cassette_base64_is_not_flagged(tmp_path):
     other_path.parent.mkdir(parents=True)
     other_path.write_text(f"_payload = '{REALISTIC_BASE64_BLOB}'\n", encoding="utf-8")
     assert len(scan_file_for_base64_blobs(other_path)) == 1
+
+
+# Every fake token below is assembled via string concatenation rather than as
+# one literal contiguous string, so nothing here is a scannable literal secret
+# in source control (relevant on a public repo with GitHub's own secret
+# scanning / push protection watching for exactly these shapes).
+
+
+def test_anthropic_key_is_flagged(tmp_path):
+    path = tmp_path / "config.py"
+    token = "sk-ant-" + "api03-K3f9Qz7xLm2Rt8Vb5Nc1Yd6Wp4Hj0Sg"
+    path.write_text(f'API_KEY = "{token}"\n', encoding="utf-8")
+    findings = scan_file_for_secrets(path)
+    assert len(findings) == 1
+    assert findings[0].category == "hardcoded_secret"
+    assert findings[0].severity == Severity.HIGH
+    assert token not in findings[0].detail
+    assert token not in findings[0].summary
+
+
+def test_openai_key_is_flagged_and_not_double_counted_as_anthropic(tmp_path):
+    path = tmp_path / "config.py"
+    token = "sk-" + "proj-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4"
+    path.write_text(f'API_KEY = "{token}"\n', encoding="utf-8")
+    findings = scan_file_for_secrets(path)
+    assert len(findings) == 1
+    assert "OpenAI" in findings[0].summary
+
+
+def test_github_token_is_flagged(tmp_path):
+    path = tmp_path / "config.js"
+    token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    path.write_text(f'const TOKEN = "{token}";\n', encoding="utf-8")
+    assert len(scan_file_for_secrets(path)) == 1
+
+
+def test_aws_access_key_is_flagged(tmp_path):
+    path = tmp_path / "config.py"
+    token = "AKIA" + "QR7TUVWXY9AB3CDE"
+    path.write_text(f'AWS_KEY = "{token}"\n', encoding="utf-8")
+    assert len(scan_file_for_secrets(path)) == 1
+
+
+def test_slack_token_is_flagged(tmp_path):
+    path = tmp_path / "config.py"
+    token = "xoxb-" + "1234567890-K3f9Qz7xLm2Rt8"
+    path.write_text(f'SLACK_TOKEN = "{token}"\n', encoding="utf-8")
+    assert len(scan_file_for_secrets(path)) == 1
+
+
+def test_stripe_live_key_is_flagged_but_test_key_is_not(tmp_path):
+    live_path = tmp_path / "live.py"
+    live_token = "sk_live_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+    live_path.write_text(f'STRIPE_KEY = "{live_token}"\n', encoding="utf-8")
+    assert len(scan_file_for_secrets(live_path)) == 1
+
+    # Stripe's own docs commonly embed test keys directly - not a signal.
+    test_path = tmp_path / "test.py"
+    test_token = "sk_test_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+    test_path.write_text(f'STRIPE_KEY = "{test_token}"\n', encoding="utf-8")
+    assert scan_file_for_secrets(test_path) == []
+
+
+def test_google_api_key_is_flagged(tmp_path):
+    path = tmp_path / "config.py"
+    token = "AIza" + "S9d8F7g6H5j4K3l2M1n0P9q8R7s6T5u4V3w"
+    path.write_text(f'GOOGLE_KEY = "{token}"\n', encoding="utf-8")
+    assert len(scan_file_for_secrets(path)) == 1
+
+
+def test_private_key_block_is_flagged(tmp_path):
+    path = tmp_path / "key.py"
+    path.write_text(
+        "KEY = '''\n-----BEGIN RSA PRIVATE KEY-----\nnotarealkeybodyjustplaceholderbytes\n-----END RSA PRIVATE KEY-----\n'''\n",
+        encoding="utf-8",
+    )
+    findings = scan_file_for_secrets(path)
+    assert len(findings) == 1
+    assert "private key" in findings[0].summary
+
+
+def test_known_aws_example_key_is_not_flagged(tmp_path):
+    # The one canonical placeholder every AWS tutorial on earth uses verbatim.
+    path = tmp_path / "config.py"
+    token = "AKIA" + "IOSFODNN7EXAMPLE"
+    path.write_text(f'AWS_KEY = "{token}"\n', encoding="utf-8")
+    assert scan_file_for_secrets(path) == []
+
+
+def test_low_diversity_placeholder_is_not_flagged(tmp_path):
+    path = tmp_path / "config.py"
+    token = "AKIA" + "X" * 16
+    path.write_text(f'AWS_KEY = "{token}"\n', encoding="utf-8")
+    assert scan_file_for_secrets(path) == []
+
+
+def test_worded_placeholder_is_not_flagged(tmp_path):
+    # Enough character variety to survive the diversity check alone - the word
+    # list is what has to catch this one.
+    path = tmp_path / "config.py"
+    token = "sk_live_" + "exampleAPIkey1234567890"
+    path.write_text(f'STRIPE_KEY = "{token}"\n', encoding="utf-8")
+    assert scan_file_for_secrets(path) == []
+
+
+def test_secret_in_non_text_extension_is_not_flagged(tmp_path):
+    path = tmp_path / "logo.png"
+    token = "AKIA" + "QR7TUVWXY9AB3CDE"
+    path.write_bytes(token.encode("ascii"))
+    assert scan_file_for_secrets(path) == []
 
 
 def test_dev_tooling_hidden_executables_are_downgraded_not_suppressed(tmp_path):
