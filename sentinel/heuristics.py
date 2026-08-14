@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import difflib
+import json
 import os
 import re
 from pathlib import Path
@@ -364,6 +366,171 @@ def scan_file_for_secrets(path: Path) -> list[Finding]:
                     source=str(path),
                 )
             )
+    return findings
+
+
+# Small, hand-curated, deliberately not exhaustive - real npm/PyPI supply-chain
+# attacks overwhelmingly target the MOST popular packages, since that's what
+# maximizes the odds someone mistypes toward the attacker's name. Not
+# validated against a corpus of real typosquat incidents; a judgment call,
+# same as SECRET_PATTERNS above.
+POPULAR_PYPI_PACKAGES = frozenset({
+    "requests", "numpy", "pandas", "flask", "django", "pytest", "boto3",
+    "click", "pyyaml", "setuptools", "pip", "wheel", "certifi", "urllib3",
+    "six", "python-dateutil", "jinja2", "cryptography", "aiohttp",
+    "sqlalchemy", "beautifulsoup4", "lxml", "pillow", "scipy", "matplotlib",
+    "torch", "tensorflow", "transformers", "openai", "anthropic", "fastapi",
+    "uvicorn", "pydantic", "httpx", "rich", "typer", "black", "ruff", "mypy",
+    "attrs", "packaging", "idna", "charset-normalizer", "pytz", "tqdm",
+    "protobuf", "grpcio",
+})
+
+POPULAR_NPM_PACKAGES = frozenset({
+    "lodash", "react", "express", "axios", "chalk", "commander", "dotenv",
+    "typescript", "webpack", "eslint", "jest", "vue", "next", "prettier",
+    "moment", "uuid", "yargs", "glob", "semver", "node-fetch", "cors",
+    "body-parser", "mongoose", "socket.io", "redux", "babel", "vite",
+    "tailwindcss", "react-dom", "vue-router", "vuex", "nodemon", "inquirer",
+    "rimraf", "minimist", "debug", "ws", "cheerio", "puppeteer", "sharp",
+    "dayjs", "zod",
+})
+
+PIP_INSTALL_RE = re.compile(r"\bpip3?\s+install\b(?P<args>.*)$", re.MULTILINE)
+NPM_INSTALL_RE = re.compile(r"\b(?:npm\s+(?:install|i)|yarn\s+add)\b(?P<args>.*)$", re.MULTILINE)
+
+_VERSION_SPECIFIER_RE = re.compile(r"(==|>=|<=|~=|!=|<|>).*$")
+
+
+def _strip_version_specifier(token: str) -> str:
+    return _VERSION_SPECIFIER_RE.sub("", token).strip()
+
+
+_TOKEN_PUNCTUATION = "`'\",.;:()[]{}!?"
+
+
+def _extract_install_targets(args: str) -> list[str]:
+    targets = []
+    for raw_token in args.split():
+        # Markdown-wrapped commands (`pip install requests`) leave a
+        # trailing backtick/quote attached to the last token otherwise -
+        # stripped here so it doesn't defeat the exact-match check below.
+        token = raw_token.strip(_TOKEN_PUNCTUATION)
+        if not token or token.startswith("-") or token.endswith((".txt", ".json", ".cfg", ".toml")):
+            continue
+        name = _strip_version_specifier(token)
+        if name:
+            targets.append(name)
+    return targets
+
+
+def _normalize_package_name(name: str) -> str:
+    # PyPI treats python-dateutil/python_dateutil as the same package.
+    return name.strip().lower().replace("_", "-")
+
+
+def _typosquat_match(name: str, popular: frozenset[str]) -> str | None:
+    """Returns the popular package name a candidate is suspiciously close to
+    (but not identical to), or None. Ratio-based (difflib), not raw edit
+    distance - deliberately: it naturally avoids flagging a real, longer
+    extension package (flask-restful vs. flask scores well below the cutoff
+    on length alone), which a fixed edit-distance-of-1-or-2 rule wouldn't."""
+    normalized = _normalize_package_name(name)
+    if len(normalized) < 3 or normalized in popular:
+        return None
+    matches = difflib.get_close_matches(normalized, popular, n=1, cutoff=0.82)
+    return matches[0] if matches else None
+
+
+def scan_text_for_dependency_typosquats(text: str, source: str) -> list[Finding]:
+    """Flag install targets in pip/npm/yarn commands whose name is
+    suspiciously close to a popular package - the typosquatting pattern
+    behind most real npm/PyPI supply-chain attacks, not hand-written
+    obfuscation."""
+    findings: list[Finding] = []
+    for pattern, popular, ecosystem in (
+        (PIP_INSTALL_RE, POPULAR_PYPI_PACKAGES, "PyPI"),
+        (NPM_INSTALL_RE, POPULAR_NPM_PACKAGES, "npm"),
+    ):
+        for match in pattern.finditer(text):
+            line_no = text.count("\n", 0, match.start()) + 1
+            for target in _extract_install_targets(match.group("args")):
+                popular_name = _typosquat_match(target, popular)
+                if popular_name is None:
+                    continue
+                findings.append(
+                    Finding(
+                        category="dependency_typosquat",
+                        severity=Severity.MEDIUM,
+                        summary=f"Install target '{target}' is suspiciously close to the "
+                        f"popular {ecosystem} package '{popular_name}' — possible typosquat, "
+                        "worth confirming this is the intended package before installing",
+                        detail=f"line {line_no}: {match.group(0).strip()[:200]}",
+                        source=source,
+                    )
+                )
+    return findings
+
+
+def _parse_requirements_txt(text: str) -> list[str]:
+    names = []
+    for line in text.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped or stripped.startswith("-"):
+            continue
+        name = _strip_version_specifier(stripped.split(";")[0].strip())
+        if name:
+            names.append(name)
+    return names
+
+
+def _parse_package_json(text: str) -> list[str]:
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    names = []
+    for key in ("dependencies", "devDependencies"):
+        deps = data.get(key) if isinstance(data, dict) else None
+        if isinstance(deps, dict):
+            names.extend(deps.keys())
+    return names
+
+
+def scan_file_for_dependency_typosquats(path: Path) -> list[Finding]:
+    """Flag typosquat-shaped names in a bundled dependency manifest
+    (requirements.txt/package.json), or in an install command inside any
+    other bundled script/prose file."""
+    if path.suffix not in TEXT_EXTENSIONS:
+        return []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    lowered_name = path.name.lower()
+    if lowered_name == "requirements.txt":
+        names, popular, ecosystem = _parse_requirements_txt(text), POPULAR_PYPI_PACKAGES, "PyPI"
+    elif lowered_name == "package.json":
+        names, popular, ecosystem = _parse_package_json(text), POPULAR_NPM_PACKAGES, "npm"
+    else:
+        return scan_text_for_dependency_typosquats(text, str(path))
+
+    findings: list[Finding] = []
+    for name in names:
+        popular_name = _typosquat_match(name, popular)
+        if popular_name is None:
+            continue
+        findings.append(
+            Finding(
+                category="dependency_typosquat",
+                severity=Severity.MEDIUM,
+                summary=f"Declared dependency '{name}' is suspiciously close to the popular "
+                f"{ecosystem} package '{popular_name}' — possible typosquat, worth confirming "
+                "this is the intended package before installing",
+                detail=f"declared in {path.name}",
+                source=str(path),
+            )
+        )
     return findings
 
 
@@ -756,6 +923,7 @@ def run_heuristics(
         findings.extend(scan_file_for_eval_exec_decode(bundled_file.path))
         findings.extend(scan_file_for_prose_instructions(bundled_file.path))
         findings.extend(scan_file_for_secrets(bundled_file.path))
+        findings.extend(scan_file_for_dependency_typosquats(bundled_file.path))
         if on_file is not None:
             on_file(bundled_file.relative_path, len(findings))
 
@@ -769,6 +937,7 @@ def run_heuristics(
             body = None
         if body is not None:
             findings.extend(scan_text_for_prose_instructions(body, str(skill_md_path)))
+            findings.extend(scan_text_for_dependency_typosquats(body, str(skill_md_path)))
 
     if metadata is None:
         try:
@@ -787,9 +956,15 @@ def run_heuristics(
             findings.extend(
                 scan_text_for_prose_instructions(metadata.description, f"{metadata.path} (description)")
             )
+            findings.extend(
+                scan_text_for_dependency_typosquats(metadata.description, f"{metadata.path} (description)")
+            )
         if metadata.when_to_use:
             findings.extend(
                 scan_text_for_prose_instructions(metadata.when_to_use, f"{metadata.path} (when_to_use)")
+            )
+            findings.extend(
+                scan_text_for_dependency_typosquats(metadata.when_to_use, f"{metadata.path} (when_to_use)")
             )
         findings.extend(scan_allowed_tools_for_broad_grant(metadata.allowed_tools, str(metadata.path)))
         findings.extend(scan_paths_for_sensitive_scope(metadata.paths, str(metadata.path)))

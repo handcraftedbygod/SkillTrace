@@ -48,6 +48,7 @@ STATIC_FINDING_CATEGORIES = (
     "frontmatter_sensitive_path_scope",
     "hidden_unicode_content",
     "hardcoded_secret",
+    "dependency_typosquat",
 )
 
 # Confidence: how certain the detection method itself is (deterministic AST/regex
@@ -68,6 +69,7 @@ CATEGORY_METADATA: dict[str, tuple[Confidence, str]] = {
     "frontmatter_sensitive_path_scope": (Confidence.MEDIUM, "T1552.001"),
     "hidden_unicode_content": (Confidence.HIGH, "T1027"),
     "hardcoded_secret": (Confidence.HIGH, "T1552.001"),
+    "dependency_typosquat": (Confidence.MEDIUM, "T1195.001"),
     "sandbox_timeout": (Confidence.HIGH, ""),
     "sandbox_no_trace_data": (Confidence.HIGH, ""),
     "sandbox_not_attempted": (Confidence.HIGH, ""),
@@ -95,6 +97,7 @@ FINDING_CATEGORY_LABELS: dict[str, str] = {
     "frontmatter_sensitive_path_scope": "declared access to sensitive file paths",
     "hidden_unicode_content": "invisible/bidi Unicode characters hidden in skill text",
     "hardcoded_secret": "a hardcoded credential/API key",
+    "dependency_typosquat": "a possibly typosquatted dependency",
     "network_request": "unexpected outbound network requests",
     "network_connection": "unexpected outbound connection attempts",
     "out_of_scope_file_access": "file access outside the skill's own directory",

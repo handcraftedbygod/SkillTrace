@@ -14,8 +14,10 @@ from sentinel.heuristics import (
     run_heuristics,
     scan_allowed_tools_for_broad_grant,
     scan_file_for_base64_blobs,
+    scan_file_for_dependency_typosquats,
     scan_file_for_secrets,
     scan_paths_for_sensitive_scope,
+    scan_text_for_dependency_typosquats,
     scan_text_for_prose_instructions,
 )
 from sentinel.skillmd import parse_skill_md
@@ -276,6 +278,73 @@ def test_secret_in_non_text_extension_is_not_flagged(tmp_path):
     token = "AKIA" + "QR7TUVWXY9AB3CDE"
     path.write_bytes(token.encode("ascii"))
     assert scan_file_for_secrets(path) == []
+
+
+def test_pip_install_typo_of_popular_package_is_flagged():
+    findings = scan_text_for_dependency_typosquats("## Setup\n\n`pip install reqeusts`\n", "SKILL.md")
+    assert len(findings) == 1
+    assert findings[0].category == "dependency_typosquat"
+    assert findings[0].severity == Severity.MEDIUM
+    assert "requests" in findings[0].summary
+
+
+def test_npm_install_typo_of_popular_package_is_flagged():
+    findings = scan_text_for_dependency_typosquats("Run `npm install expres` to set up.\n", "SKILL.md")
+    assert len(findings) == 1
+    assert "express" in findings[0].summary
+
+
+def test_pip_install_exact_match_is_not_flagged():
+    assert scan_text_for_dependency_typosquats("`pip install requests`\n", "SKILL.md") == []
+
+
+def test_pip_install_with_version_pin_and_flags_is_handled():
+    findings = scan_text_for_dependency_typosquats("`pip install --upgrade reqeusts==2.31.0`\n", "SKILL.md")
+    assert len(findings) == 1
+    assert "requests" in findings[0].summary
+
+
+def test_legitimately_longer_extension_package_is_not_flagged():
+    # Ratio-based matching, not raw edit distance - a real, longer extension
+    # package scores well below the cutoff on length alone, unlike a fixed
+    # edit-distance-of-1-or-2 rule which could still catch it.
+    assert scan_text_for_dependency_typosquats("`pip install flask-restful`\n", "SKILL.md") == []
+
+
+def test_pip_install_dash_r_requirements_is_not_flagged():
+    # -r requirements.txt is a flag + filename, not a package name.
+    assert scan_text_for_dependency_typosquats("`pip install -r requirements.txt`\n", "SKILL.md") == []
+
+
+def test_requirements_txt_typo_is_flagged(tmp_path):
+    path = tmp_path / "requirements.txt"
+    path.write_text("flask==3.0.0\nreqeusts==2.31.0\n# a comment\n-e .\n", encoding="utf-8")
+    findings = scan_file_for_dependency_typosquats(path)
+    assert len(findings) == 1
+    assert "requests" in findings[0].summary
+
+
+def test_package_json_typo_is_flagged(tmp_path):
+    path = tmp_path / "package.json"
+    path.write_text(
+        '{"dependencies": {"lodahs": "^4.17.21", "chalk": "^5.0.0"}}',
+        encoding="utf-8",
+    )
+    findings = scan_file_for_dependency_typosquats(path)
+    assert len(findings) == 1
+    assert "lodash" in findings[0].summary
+
+
+def test_malformed_package_json_is_not_flagged_and_does_not_raise(tmp_path):
+    path = tmp_path / "package.json"
+    path.write_text("{not valid json", encoding="utf-8")
+    assert scan_file_for_dependency_typosquats(path) == []
+
+
+def test_dependency_typosquat_in_non_text_extension_is_not_flagged(tmp_path):
+    path = tmp_path / "logo.png"
+    path.write_bytes(b"pip install reqeusts")
+    assert scan_file_for_dependency_typosquats(path) == []
 
 
 def test_dev_tooling_hidden_executables_are_downgraded_not_suppressed(tmp_path):
