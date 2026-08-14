@@ -36,8 +36,11 @@ from sentinel.findings import Finding, Severity
 from sentinel.heuristics import run_heuristics
 from sentinel.report import build_report, diff_sandbox_results, render_html_multi, render_json_multi, render_markdown_multi
 from sentinel.sandbox import (
+    DIFFERENTIAL_CPUS,
     DIFFERENTIAL_ENV,
     DIFFERENTIAL_HOSTNAME,
+    DIFFERENTIAL_MEMORY,
+    DIFFERENTIAL_PIDS_LIMIT,
     DockerUnavailableError,
     SentinelError,
     build_invocation_candidates,
@@ -499,6 +502,9 @@ def _run_scan(args: argparse.Namespace) -> int:
                                         timeout_s=args.timeout,
                                         hostname=DIFFERENTIAL_HOSTNAME,
                                         env_overrides=DIFFERENTIAL_ENV,
+                                        cpus=DIFFERENTIAL_CPUS,
+                                        memory=DIFFERENTIAL_MEMORY,
+                                        pids_limit=DIFFERENTIAL_PIDS_LIMIT,
                                     )
                                 for baseline_result, varied_result in zip(sandbox_results, varied_results):
                                     heuristic_findings = heuristic_findings + diff_sandbox_results(

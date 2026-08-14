@@ -445,6 +445,15 @@ DEFAULT_TIMEOUT_S = 60
 DIFFERENTIAL_HOSTNAME = "build-worker-04"
 DIFFERENTIAL_ENV = {"TERM": "xterm-256color", "SSH_CONNECTION": "10.0.0.5 52341 10.0.0.2 22"}
 
+# The baseline pass's resource limits (below) are deliberately tight, a real
+# sandbox/CI box's usual footprint. A skill checking os.cpu_count() or
+# /proc/meminfo and only acting up once resources look like a real desktop
+# is the same class of check hostname/env above catches — --differential's
+# "varied" pass gives it that desktop-plausible headroom instead.
+DIFFERENTIAL_CPUS = "4"
+DIFFERENTIAL_MEMORY = "8g"
+DIFFERENTIAL_PIDS_LIMIT = "4096"
+
 
 def run_skill_in_sandbox(
     skill_dir: Path,
@@ -454,19 +463,26 @@ def run_skill_in_sandbox(
     image_tag: str | None = None,
     hostname: str | None = None,
     env_overrides: dict[str, str] | None = None,
+    cpus: str = "1",
+    memory: str = "512m",
+    pids_limit: str = "256",
 ) -> list[SandboxRunResult]:
     """Run each invocation candidate in its own container lifetime, each with its
     own strace pass, and return one SandboxRunResult per candidate.
 
-    hostname/env_overrides exist for --differential's second, "varied" pass;
-    left unset, every run uses docker's own default hostname and no extra env."""
+    hostname/env_overrides/cpus/memory/pids_limit exist for --differential's
+    second, "varied" pass; left unset, every run uses docker's own default
+    hostname, no extra env, and the tight default resource limits below."""
     ensure_docker_available()
     tag = image_tag or build_sandbox_image()
 
     results: list[SandboxRunResult] = []
     for candidate in candidates:
         results.append(
-            _run_one_candidate(skill_dir, candidate, tag, allow_network, timeout_s, hostname, env_overrides)
+            _run_one_candidate(
+                skill_dir, candidate, tag, allow_network, timeout_s,
+                hostname, env_overrides, cpus, memory, pids_limit,
+            )
         )
     return results
 
@@ -479,6 +495,9 @@ def _run_one_candidate(
     timeout_s: int,
     hostname: str | None = None,
     env_overrides: dict[str, str] | None = None,
+    cpus: str = "1",
+    memory: str = "512m",
+    pids_limit: str = "256",
 ) -> SandboxRunResult:
     container_name = f"sentinel-run-{uuid.uuid4().hex[:12]}"
     skill_dir = skill_dir.resolve()
@@ -498,9 +517,9 @@ def _run_one_candidate(
         "--name",
         container_name,
         "--cap-add=SYS_PTRACE",
-        "--memory=512m",
-        "--pids-limit=256",
-        "--cpus=1",
+        f"--memory={memory}",
+        f"--pids-limit={pids_limit}",
+        f"--cpus={cpus}",
         "-v",
         f"{skill_dir}:/skill:ro",
         "-v",
