@@ -24,6 +24,7 @@ from sentinel.console import (
     file_scan_progress,
     make_console,
     maybe_print_banner,
+    print_comparison,
     print_error,
     print_report,
     print_reports_generated,
@@ -34,7 +35,16 @@ from sentinel.console import (
 )
 from sentinel.findings import Finding, Severity
 from sentinel.heuristics import run_heuristics
-from sentinel.report import build_report, diff_sandbox_results, render_html_multi, render_json_multi, render_markdown_multi
+from sentinel.report import (
+    build_report,
+    compare_to_prior,
+    diff_sandbox_results,
+    load_prior_reports,
+    match_prior_reports,
+    render_html_multi,
+    render_json_multi,
+    render_markdown_multi,
+)
 from sentinel.sandbox import (
     DIFFERENTIAL_CPUS,
     DIFFERENTIAL_ENV,
@@ -78,6 +88,10 @@ _SCAN_EXAMPLES = [
     ("skilltrace scan <git-url>", "scan a skill (or a whole collection repo) from git"),
     ("skilltrace scan ./my-skill --fail-threshold high", "exit non-zero for CI gating"),
     ("skilltrace scan ./my-skill --json -o report.json", "machine-readable output to a file"),
+    (
+        "skilltrace scan ./my-skill --compare-to report.json",
+        "diff against a prior scan, for periodic re-scanning",
+    ),
 ]
 
 _EXIT_CODES = [
@@ -87,6 +101,7 @@ _EXIT_CODES = [
     (3, "Docker unavailable"),
     (4, "Sandbox error"),
     (5, "--semantic-review requested without ANTHROPIC_API_KEY set"),
+    (6, "--compare-to points at a file that couldn't be read/parsed"),
 ]
 
 _EXIT_CODES_NOTE = (
@@ -267,6 +282,12 @@ def _build_arg_parser(*, no_color: bool = False) -> argparse.ArgumentParser:
         action="store_true",
         help="Re-run with a varied hostname/env and flag behavior that differs — a real "
         "sandbox-evasion signal (opt-in, ~2x runtime)",
+    )
+    advanced.add_argument(
+        "--compare-to",
+        metavar="FILE",
+        help="Diff findings against a prior JSON report (see --json/-o) and highlight what's "
+        "new since then — for periodic re-scanning of a previously-cleared skill (opt-in)",
     )
 
     return parser
@@ -591,6 +612,23 @@ def _run_scan(args: argparse.Namespace) -> int:
         elapsed_s=time.time() - start_time,
         animation_s=animation_time_s,
     )
+
+    if args.compare_to:
+        try:
+            prior_reports = load_prior_reports(Path(args.compare_to))
+        except SentinelError as exc:
+            print_error(stderr_console, str(exc))
+            return 6
+        matches = match_prior_reports(reports, prior_reports)
+        for i, report in enumerate(reports):
+            prior = matches.get(i)
+            if prior is None:
+                label = report.skill_name or report.skill_path
+                stderr_console.print(
+                    f"{label}: no prior scan found in {args.compare_to} — nothing to compare.", style="dim"
+                )
+                continue
+            print_comparison(stderr_console, report, compare_to_prior(report, prior))
 
     if args.fail_threshold:
         threshold = Severity(args.fail_threshold)

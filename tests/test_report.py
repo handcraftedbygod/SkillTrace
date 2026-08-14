@@ -3,12 +3,17 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from sentinel.findings import Confidence, Finding, Severity
 from sentinel.report import (
     Report,
     build_report,
     collection_risk,
+    compare_to_prior,
     diff_sandbox_results,
+    load_prior_reports,
+    match_prior_reports,
     render_html,
     render_html_multi,
     render_json,
@@ -18,7 +23,7 @@ from sentinel.report import (
     sandbox_result_findings,
     sandbox_result_signature,
 )
-from sentinel.sandbox import HttpFlow, SandboxRunResult, StraceEvent
+from sentinel.sandbox import HttpFlow, SandboxRunResult, StraceEvent, SentinelError
 from sentinel.skillmd import SkillMetadata
 
 
@@ -606,3 +611,119 @@ def test_frontmatter_broad_tool_grant_renders_under_static_red_flags():
 
     html_output = render_html(report)
     assert "unscoped Bash grant" in html_output
+
+
+def _report_with_findings(name: str | None, skill_path: str, findings: list[Finding]) -> Report:
+    return Report(
+        skill_path=skill_path,
+        skill_name=name,
+        skill_description="A totally normal skill.",
+        findings=findings,
+        risk_score=0,
+        risk_level=Severity.LOW,
+        invocations=["python3 main.py"],
+    )
+
+
+def test_compare_to_prior_ignores_absolute_path_prefix_differences():
+    # Two separate git-clone runs of the same skill land under a different
+    # temp directory every time (resolve_skill_source clones into a fresh
+    # TemporaryDirectory), so Finding.source differs even for byte-identical
+    # content. This is the core value proposition of --compare-to: it must
+    # not treat that alone as a new finding.
+    prior_finding = Finding(
+        category="hardcoded_secret",
+        severity=Severity.HIGH,
+        summary="private key block-shaped credential hardcoded in uploader.py",
+        source="/tmp/skilltrace-abc123/skill-source/scripts/uploader.py",
+    )
+    current_finding = Finding(
+        category="hardcoded_secret",
+        severity=Severity.HIGH,
+        summary="private key block-shaped credential hardcoded in uploader.py",
+        source="/tmp/skilltrace-xyz789/skill-source/scripts/uploader.py",
+    )
+    prior = _report_with_findings("uploader-skill", "/tmp/skilltrace-abc123/skill-source", [prior_finding])
+    current = _report_with_findings("uploader-skill", "/tmp/skilltrace-xyz789/skill-source", [current_finding])
+
+    comparison = compare_to_prior(current, prior.to_dict())
+    assert comparison.new_findings == []
+    assert comparison.resolved_count == 0
+
+
+def test_compare_to_prior_flags_a_genuinely_new_finding():
+    prior = _report_with_findings("uploader-skill", "/tmp/run1", [])
+    new_finding = Finding(
+        category="hardcoded_secret", severity=Severity.HIGH, summary="new secret", source="/tmp/run2/uploader.py"
+    )
+    current = _report_with_findings("uploader-skill", "/tmp/run2", [new_finding])
+
+    comparison = compare_to_prior(current, prior.to_dict())
+    assert comparison.new_findings == [new_finding]
+    assert comparison.resolved_count == 0
+
+
+def test_compare_to_prior_counts_resolved_findings_without_duplicating_them():
+    old_finding = Finding(
+        category="hardcoded_secret", severity=Severity.HIGH, summary="old secret", source="/tmp/run1/uploader.py"
+    )
+    prior = _report_with_findings("uploader-skill", "/tmp/run1", [old_finding])
+    current = _report_with_findings("uploader-skill", "/tmp/run2", [])
+
+    comparison = compare_to_prior(current, prior.to_dict())
+    assert comparison.new_findings == []
+    assert comparison.resolved_count == 1
+
+
+def test_match_prior_reports_matches_by_skill_name():
+    current_reports = [
+        _report_with_findings("skill-a", "/tmp/a", []),
+        _report_with_findings("skill-b", "/tmp/b", []),
+    ]
+    prior_reports = [
+        _report_with_findings("skill-b", "/tmp/old-b", []).to_dict(),
+        _report_with_findings("skill-c", "/tmp/old-c", []).to_dict(),
+    ]
+    matches = match_prior_reports(current_reports, prior_reports)
+    assert list(matches.keys()) == [1]
+    assert matches[1]["skill_name"] == "skill-b"
+
+
+def test_match_prior_reports_singleton_fallback_ignores_name_mismatch():
+    current_reports = [_report_with_findings(None, "/tmp/a", [])]
+    prior_reports = [_report_with_findings("some-name", "/tmp/old-a", []).to_dict()]
+    matches = match_prior_reports(current_reports, prior_reports)
+    assert matches == {0: prior_reports[0]}
+
+
+def test_match_prior_reports_no_match_in_a_collection():
+    current_reports = [
+        _report_with_findings("skill-a", "/tmp/a", []),
+        _report_with_findings("skill-b", "/tmp/b", []),
+    ]
+    prior_reports = [_report_with_findings("skill-c", "/tmp/old-c", []).to_dict()]
+    assert match_prior_reports(current_reports, prior_reports) == {}
+
+
+def test_load_prior_reports_normalizes_single_dict_to_list(tmp_path):
+    report_dict = _report_with_findings("solo-skill", "/tmp/solo", []).to_dict()
+    path = tmp_path / "prior.json"
+    path.write_text(json.dumps(report_dict), encoding="utf-8")
+    assert load_prior_reports(path) == [report_dict]
+
+
+def test_load_prior_reports_keeps_a_list_as_is(tmp_path):
+    report_dicts = [
+        _report_with_findings("a", "/tmp/a", []).to_dict(),
+        _report_with_findings("b", "/tmp/b", []).to_dict(),
+    ]
+    path = tmp_path / "prior.json"
+    path.write_text(json.dumps(report_dicts), encoding="utf-8")
+    assert load_prior_reports(path) == report_dicts
+
+
+def test_load_prior_reports_malformed_json_raises_sentinel_error(tmp_path):
+    path = tmp_path / "prior.json"
+    path.write_text("not valid json{", encoding="utf-8")
+    with pytest.raises(SentinelError):
+        load_prior_reports(path)

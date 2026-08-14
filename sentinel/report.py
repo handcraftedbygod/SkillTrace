@@ -18,6 +18,7 @@ from pathlib import Path
 from sentinel.findings import Confidence, Finding, Severity
 from sentinel.sandbox import (
     SandboxRunResult,
+    SentinelError,
     strace_connect_events,
     strace_notable_execve_events,
     strace_notable_openat_events,
@@ -402,6 +403,82 @@ class Report:
             "allowed_tools": self.allowed_tools,
             "findings": [f.to_dict() for f in self.findings],
         }
+
+
+def load_prior_reports(path: Path) -> list[dict]:
+    """Load a --compare-to file: a single-skill scan's JSON is a bare dict
+    (render_json), a collection scan's is a list (render_json_multi) — always
+    return a list so callers don't need to know which."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SentinelError(f"Could not read --compare-to file {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SentinelError(f"--compare-to file {path} is not valid JSON: {exc}") from exc
+    return data if isinstance(data, list) else [data]
+
+
+def match_prior_reports(current_reports: list[Report], prior_reports: list[dict]) -> dict[int, dict]:
+    """Maps each index in current_reports to its matching prior report dict.
+
+    Matched by skill_name, the one identifier stable across two separate
+    git-clone runs of the same skill (skill_path is a fresh temp directory
+    every time resolve_skill_source clones a URL, see sandbox.py). If both
+    this run and the prior file scanned exactly one skill, they're paired
+    unconditionally regardless of name — covers the common single-skill scan
+    even when a skill declares no name at all."""
+    if len(current_reports) == 1 and len(prior_reports) == 1:
+        return {0: prior_reports[0]}
+    prior_by_name = {p["skill_name"]: p for p in prior_reports if p.get("skill_name")}
+    return {
+        i: prior_by_name[r.skill_name]
+        for i, r in enumerate(current_reports)
+        if r.skill_name and r.skill_name in prior_by_name
+    }
+
+
+def _normalize_source(source: str, skill_path: str) -> str:
+    """Strip a Finding's own skill_path prefix so two separate scans of the
+    same skill (e.g. two git-clone temp dirs) produce a comparable source
+    instead of two different absolute paths. Non-path sources ("sandbox",
+    "invocation: ...") aren't under skill_path and pass through unchanged."""
+    try:
+        return str(Path(source).relative_to(Path(skill_path)))
+    except ValueError:
+        return source
+
+
+def _finding_signature(finding: dict, skill_path: str) -> tuple:
+    return (finding["category"], _normalize_source(finding.get("source", ""), skill_path), finding["summary"])
+
+
+@dataclass
+class ReportComparison:
+    new_findings: list[Finding]
+    resolved_count: int
+    prior_generated_at: float
+
+
+def compare_to_prior(current: Report, prior: dict) -> ReportComparison:
+    """Diff current's findings against a prior scan of the same skill (see
+    match_prior_reports), matched by _finding_signature rather than raw
+    equality so a re-scan of a git-sourced skill doesn't report every
+    finding as "new" just because the temp clone path changed."""
+    prior_sigs = {_finding_signature(f, prior.get("skill_path", "")) for f in prior.get("findings", [])}
+    current_dicts = [f.to_dict() for f in current.findings]
+    current_sigs = {_finding_signature(f, current.skill_path) for f in current_dicts}
+
+    new_findings = [
+        f
+        for f, d in zip(current.findings, current_dicts)
+        if _finding_signature(d, current.skill_path) not in prior_sigs
+    ]
+    resolved_count = len(prior_sigs - current_sigs)
+    return ReportComparison(
+        new_findings=new_findings,
+        resolved_count=resolved_count,
+        prior_generated_at=prior.get("generated_at", 0.0),
+    )
 
 
 def compute_risk(findings: list[Finding]) -> tuple[int, Severity]:

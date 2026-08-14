@@ -17,6 +17,7 @@ import importlib.metadata
 import math
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
@@ -29,7 +30,7 @@ from rich.table import Table
 from rich.text import Text
 
 from sentinel.findings import Severity
-from sentinel.report import DIAGNOSTIC_CATEGORIES, Report, collection_risk, risk_guidance
+from sentinel.report import DIAGNOSTIC_CATEGORIES, Report, ReportComparison, collection_risk, risk_guidance
 
 SEVERITY_STYLE = {
     Severity.LOW: "green",
@@ -562,3 +563,18 @@ def print_scan_complete(
     else:
         grid.add_row("Time:", f"{elapsed_s:.2f}s")
     console.print(grid)
+
+
+def print_comparison(console: Console, report: Report, comparison: ReportComparison) -> None:
+    label = report.skill_name or report.skill_path
+    since = datetime.fromtimestamp(comparison.prior_generated_at).strftime("%Y-%m-%d %H:%M")
+    if not comparison.new_findings and not comparison.resolved_count:
+        console.print(f"{label}: no change since last scan ({since}).", style="dim")
+        return
+    console.print()
+    console.print(f"{label} — since last scan ({since}):", style="bold")
+    if comparison.new_findings:
+        console.print(f"{len(comparison.new_findings)} new finding(s):", style="bold red")
+        console.print(_findings_table(comparison.new_findings))
+    if comparison.resolved_count:
+        console.print(f"{comparison.resolved_count} finding(s) no longer present.", style="green")

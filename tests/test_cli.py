@@ -235,3 +235,42 @@ def test_progress_lines_shown_without_quiet_on_multi_skill_scan(tmp_path, capsys
     exit_code = main(["scan", str(tmp_path), "--no-sandbox"])
     assert exit_code == 0
     assert "scanning" in capsys.readouterr().err
+
+
+def test_compare_to_unchanged_skill_reports_no_change(tmp_path, capsys):
+    skill = _write_skill(tmp_path, script="print('hello')\n")
+    prior_json = tmp_path / "prior.json"
+    assert main(["scan", str(skill), "--static", "--json", "-o", str(prior_json)]) == 0
+    capsys.readouterr()
+
+    exit_code = main(["scan", str(skill), "--static", "--compare-to", str(prior_json)])
+    assert exit_code == 0
+    assert "no change since last scan" in capsys.readouterr().err
+
+
+def test_compare_to_flags_a_new_finding_since_prior_scan(tmp_path, capsys):
+    skill = _write_skill(tmp_path, script="print('hello')\n")
+    prior_json = tmp_path / "prior.json"
+    assert main(["scan", str(skill), "--static", "--json", "-o", str(prior_json)]) == 0
+    capsys.readouterr()
+
+    # A one-character transposition of the popular PyPI package "requests" —
+    # deterministically trips dependency_typosquat (scan_text_for_dependency_
+    # typosquats runs over any TEXT_EXTENSIONS file's raw content, comments
+    # included, not just SKILL.md).
+    (skill / "scripts" / "run.py").write_text("print('hello')\n# pip install reqeusts\n", encoding="utf-8")
+    exit_code = main(["scan", str(skill), "--static", "--compare-to", str(prior_json)])
+    assert exit_code == 0
+    err = capsys.readouterr().err
+    assert "1 new finding" in err
+    assert "requests" in err.lower()
+
+
+def test_compare_to_malformed_file_returns_6(tmp_path, capsys):
+    skill = _write_skill(tmp_path)
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("not valid json{", encoding="utf-8")
+
+    exit_code = main(["scan", str(skill), "--static", "--compare-to", str(bad_json)])
+    assert exit_code == 6
+    assert "not valid JSON" in capsys.readouterr().err
