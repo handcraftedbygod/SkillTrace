@@ -50,6 +50,25 @@ KNOWN_SKILL_INSTALL_DIRS = {".claude", ".agents", ".gemini", ".cursor", ".codex"
 # meant to be valid — noise repeated on every repo that vendors that package.
 TEST_SCAFFOLDING_DIR_NAMES = {"test", "tests", "__tests__", "fixtures", "testdata", "spec", "__mocks__"}
 
+# Standard, independently-documented credential-file conventions — .env
+# (dotenv/12-factor), .npmrc (npm's own auth-token docs), .pypirc (twine/PyPI
+# upload credentials), .netrc (curl(1)/git basic-auth) — carved out of the
+# blanket dot-exclusion below so a real hardcoded secret sitting in one of
+# these isn't invisible to the scanner. Unlike KNOWN_SKILL_INSTALL_DIRS, this
+# isn't from a specific skill found during this project's own scan; it's the
+# standard credential-file surface these tools document themselves. See
+# discover_bundled_files()'s executable/shebang guard for why this carve-out
+# doesn't also open a way to hide an actual script behind one of these names.
+KNOWN_SECRET_DOTFILES = {".env", ".npmrc", ".pypirc", ".netrc"}
+
+
+def has_shebang(path: Path) -> bool:
+    try:
+        with path.open("rb") as fh:
+            return fh.read(2) == b"#!"
+    except OSError:
+        return False
+
 
 class SkillMdNotFoundError(Exception):
     """Raised when a candidate skill directory has no SKILL.md."""
@@ -257,12 +276,16 @@ class BundledFile:
 
 
 def discover_bundled_files(skill_dir: Path) -> list[BundledFile]:
-    """Walk skill_dir's visible surface (excluding SKILL.md and dotfiles/dot-dirs),
-    classifying scripts vs. resources.
+    """Walk skill_dir's visible surface (excluding SKILL.md and dotfiles/dot-dirs,
+    with one narrow exception below), classifying scripts vs. resources.
 
     Dot-prefixed paths are deliberately excluded here — that's the skill's normal,
     visible inventory. Hidden paths are a separate signal handled by
-    heuristics.scan_for_hidden_executable_content().
+    heuristics.scan_for_hidden_executable_content(). Exception: a leaf file whose
+    exact name is a known credential-dotfile convention (KNOWN_SECRET_DOTFILES) is
+    treated as bundled — but only when it's neither executable nor shebang'd, so a
+    script disguised behind one of these names still falls through to the
+    hidden-executable check untouched.
     """
     results: list[BundledFile] = []
     for path in sorted(skill_dir.rglob("*")):
@@ -278,9 +301,14 @@ def discover_bundled_files(skill_dir: Path) -> list[BundledFile]:
         # hosts (e.g. "scripts\\format.py"), which isn't a valid path on Linux —
         # the candidate silently fails to open the real file instead of testing it.
         relative_path = path.relative_to(skill_dir).as_posix()
-        if any(part.startswith(".") for part in Path(relative_path).parts):
+        parts = Path(relative_path).parts
+        if any(part.startswith(".") for part in parts[:-1]):
             continue
         is_executable = bool(path.stat().st_mode & 0o111)
+        if path.name.startswith(".") and (
+            path.name.lower() not in KNOWN_SECRET_DOTFILES or is_executable or has_shebang(path)
+        ):
+            continue
         is_script = path.suffix in SCRIPT_EXTENSIONS or is_executable
         results.append(
             BundledFile(

@@ -12,11 +12,13 @@ from typing import Callable
 
 from sentinel.findings import Finding, Severity
 from sentinel.skillmd import (
+    KNOWN_SECRET_DOTFILES,
     SkillMdNotFoundError,
     SkillMdParseError,
     SkillMetadata,
     discover_bundled_files,
     find_skill_md_file,
+    has_shebang,
     normalize_allowed_tools,
     normalize_paths,
     parse_skill_md,
@@ -67,6 +69,11 @@ JS_EVAL_DECODE_RE = re.compile(
 
 TEXT_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".rb", ".pl", ".txt", ".md", ".json", ".yaml", ".yml"}
 
+
+def _is_scannable_text_file(path: Path) -> bool:
+    return path.suffix in TEXT_EXTENSIONS or path.name.lower() in KNOWN_SECRET_DOTFILES
+
+
 # git ships these ~13 sample hooks, byte-identical, in every `git init`/`git clone`.
 # They're executable/shebanged by git itself, never attacker-controlled, and never
 # run (git only executes a hook file WITHOUT the .sample suffix) — flagging them is
@@ -108,13 +115,15 @@ def scan_file_for_base64_blobs(path: Path, min_length: int = 200) -> list[Findin
     """Flag long base64-looking runs in source/text files — a hallmark of
     self-extracting payloads (arXiv:2607.02357's structural obfuscation).
 
-    Restricted to TEXT_EXTENSIONS, same as scan_file_for_eval_exec_decode: the
-    threat model is a payload embedded in source code, not arbitrary bytes.
-    Without this, binary image data (which randomly satisfies the base64
-    charset over a long enough run) and legitimate embedded data: URIs in SVGs
-    get flagged identically to an actual self-decoding payload.
+    Restricted to _is_scannable_text_file (TEXT_EXTENSIONS plus a narrow
+    credential-dotfile allowlist, see KNOWN_SECRET_DOTFILES), same as
+    scan_file_for_eval_exec_decode: the threat model is a payload embedded in
+    source code, not arbitrary bytes. Without this, binary image data (which
+    randomly satisfies the base64 charset over a long enough run) and
+    legitimate embedded data: URIs in SVGs get flagged identically to an
+    actual self-decoding payload.
     """
-    if path.suffix not in TEXT_EXTENSIONS:
+    if not _is_scannable_text_file(path):
         return []
 
     # A "cassettes" directory is the well-known VCR.py/vcrpy/pytest-recording
@@ -223,7 +232,7 @@ def _scan_js_eval_decode(path: Path, source: str) -> list[Finding]:
 
 def scan_file_for_eval_exec_decode(path: Path) -> list[Finding]:
     """Flag eval()/exec() calls whose argument chain includes a decode call."""
-    if path.suffix not in TEXT_EXTENSIONS:
+    if not _is_scannable_text_file(path):
         return []
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
@@ -242,7 +251,10 @@ def scan_for_hidden_executable_content(skill_dir: Path) -> list[Finding]:
 
     discover_bundled_files() intentionally skips dotfiles/dot-directories (that's what
     "referenced by SKILL.md" bundling means in practice) — this walks everything,
-    including hidden paths, to find what fell outside that surface.
+    including hidden paths, to find what fell outside that surface. Its own narrow
+    KNOWN_SECRET_DOTFILES carve-out doesn't shrink this function's coverage: an
+    executable or shebang'd dotfile is excluded from that carve-out by construction,
+    so it stays unreferenced and still lands here.
     """
     findings: list[Finding] = []
     referenced = {bf.relative_path for bf in discover_bundled_files(skill_dir)}
@@ -271,15 +283,9 @@ def scan_for_hidden_executable_content(skill_dir: Path) -> list[Finding]:
             except OSError:
                 pass
 
-            has_shebang = False
-            if not is_executable:
-                try:
-                    with open(file_path, "rb") as fh:
-                        has_shebang = fh.read(2) == b"#!"
-                except OSError:
-                    pass
+            file_has_shebang = not is_executable and has_shebang(file_path)
 
-            if is_executable or has_shebang:
+            if is_executable or file_has_shebang:
                 severity = Severity.MEDIUM if DEV_TOOLING_DIR_RE.search(relative_path) else Severity.CRITICAL
                 findings.append(
                     Finding(
@@ -336,13 +342,13 @@ def _looks_like_placeholder(token: str) -> bool:
 def scan_file_for_secrets(path: Path) -> list[Finding]:
     """Flag hardcoded API keys/tokens/private keys in a bundled file.
 
-    Restricted to TEXT_EXTENSIONS, same as scan_file_for_base64_blobs — the
-    threat model is a credential embedded in source/config, not arbitrary
+    Restricted to _is_scannable_text_file, same as scan_file_for_base64_blobs —
+    the threat model is a credential embedded in source/config, not arbitrary
     bytes. Unlike base64_blob, `detail` never reproduces any part of the
     matched value: the whole point is not to re-leak a live credential into
     a report that itself might get shared, uploaded, or committed.
     """
-    if path.suffix not in TEXT_EXTENSIONS:
+    if not _is_scannable_text_file(path):
         return []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -500,7 +506,7 @@ def scan_file_for_dependency_typosquats(path: Path) -> list[Finding]:
     """Flag typosquat-shaped names in a bundled dependency manifest
     (requirements.txt/package.json), or in an install command inside any
     other bundled script/prose file."""
-    if path.suffix not in TEXT_EXTENSIONS:
+    if not _is_scannable_text_file(path):
         return []
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
