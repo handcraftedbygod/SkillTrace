@@ -273,4 +273,7 @@ def test_compare_to_malformed_file_returns_6(tmp_path, capsys):
 
     exit_code = main(["scan", str(skill), "--static", "--compare-to", str(bad_json)])
     assert exit_code == 6
-    assert "not valid JSON" in capsys.readouterr().err
+    # Whitespace-normalized: the real path (long on CI runners) can push Rich's
+    # word-wrap to split "not valid JSON" across two lines.
+    err = " ".join(capsys.readouterr().err.split())
+    assert "not valid JSON" in err
