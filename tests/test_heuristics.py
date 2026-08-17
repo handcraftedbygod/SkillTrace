@@ -347,6 +347,62 @@ def test_dependency_typosquat_in_non_text_extension_is_not_flagged(tmp_path):
     assert scan_file_for_dependency_typosquats(path) == []
 
 
+def test_requirements_txt_pinned_known_malicious_version_is_flagged(tmp_path):
+    path = tmp_path / "requirements.txt"
+    path.write_text("guardrails-ai==0.10.1\n", encoding="utf-8")
+    findings = scan_file_for_dependency_typosquats(path)
+    assert len(findings) == 1
+    assert findings[0].category == "known_malicious_package"
+    assert findings[0].severity == Severity.CRITICAL
+    assert "GHSA-xmpw-2vmm-p4p6" in findings[0].summary
+
+
+def test_requirements_txt_different_version_of_known_malicious_package_is_not_flagged(tmp_path):
+    path = tmp_path / "requirements.txt"
+    path.write_text("guardrails-ai==0.10.2\n", encoding="utf-8")
+    findings = scan_file_for_dependency_typosquats(path)
+    assert "known_malicious_package" not in {f.category for f in findings}
+
+
+def test_package_json_pinned_known_malicious_version_is_flagged(tmp_path):
+    path = tmp_path / "package.json"
+    path.write_text('{"dependencies": {"event-stream": "3.3.6"}}', encoding="utf-8")
+    findings = scan_file_for_dependency_typosquats(path)
+    assert len(findings) == 1
+    assert findings[0].category == "known_malicious_package"
+    assert "GHSA-mh6f-8j2x-4483" in findings[0].summary
+
+
+def test_package_json_range_specifier_for_known_malicious_package_is_not_flagged(tmp_path):
+    # A range can resolve to a clean version too - only an exact pin is a
+    # real claim about what's actually installed.
+    path = tmp_path / "package.json"
+    path.write_text('{"dependencies": {"event-stream": "^3.3.6"}}', encoding="utf-8")
+    findings = scan_file_for_dependency_typosquats(path)
+    assert "known_malicious_package" not in {f.category for f in findings}
+
+
+def test_wholly_malicious_package_is_flagged_regardless_of_version(tmp_path):
+    path = tmp_path / "requirements.txt"
+    path.write_text("ctx\n", encoding="utf-8")
+    findings = scan_file_for_dependency_typosquats(path)
+    assert len(findings) == 1
+    assert findings[0].category == "known_malicious_package"
+
+
+def test_install_command_naming_wholly_malicious_package_is_flagged():
+    findings = scan_text_for_dependency_typosquats("`pip install ctx`\n", "SKILL.md")
+    assert len(findings) == 1
+    assert findings[0].category == "known_malicious_package"
+
+
+def test_install_command_pinned_known_malicious_version_is_not_flagged_via_text_path():
+    # Deliberate scope boundary: exact-version-pinned entries only match via
+    # the manifest-file path, not freeform install-command text.
+    findings = scan_text_for_dependency_typosquats("`pip install guardrails-ai==0.10.1`\n", "SKILL.md")
+    assert "known_malicious_package" not in {f.category for f in findings}
+
+
 def test_dev_tooling_hidden_executables_are_downgraded_not_suppressed(tmp_path):
     # Regression test: real (not .sample) hook/CI scripts under conventional
     # maintainer-tooling directories (.github/, .githooks/, .claude/hooks/) were

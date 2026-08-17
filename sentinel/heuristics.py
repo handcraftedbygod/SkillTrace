@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from sentinel.findings import Finding, Severity
+from sentinel.known_malicious_packages import KNOWN_MALICIOUS_PACKAGES, KnownMaliciousPackage
 from sentinel.skillmd import (
     KNOWN_SECRET_DOTFILES,
     SkillMdNotFoundError,
@@ -434,6 +435,15 @@ def _normalize_package_name(name: str) -> str:
     return name.strip().lower().replace("_", "-")
 
 
+def _known_malicious_match(name: str, version: str | None, ecosystem: str) -> KnownMaliciousPackage | None:
+    entry = KNOWN_MALICIOUS_PACKAGES.get((ecosystem, _normalize_package_name(name)))
+    if entry is None:
+        return None
+    if entry.versions is None or (version is not None and version in entry.versions):
+        return entry
+    return None
+
+
 def _typosquat_match(name: str, popular: frozenset[str]) -> str | None:
     """Returns the popular package name a candidate is suspiciously close to
     (but not identical to), or None. Ratio-based (difflib), not raw edit
@@ -451,7 +461,12 @@ def scan_text_for_dependency_typosquats(text: str, source: str) -> list[Finding]
     """Flag install targets in pip/npm/yarn commands whose name is
     suspiciously close to a popular package - the typosquatting pattern
     behind most real npm/PyPI supply-chain attacks, not hand-written
-    obfuscation."""
+    obfuscation. Also flags a known-malicious package name outright
+    (KNOWN_MALICIOUS_PACKAGES) - but only entries with no legitimate version
+    at all, since reliably extracting an exact pinned version out of
+    freeform shell text isn't attempted here; a pinned malicious version
+    named in an install command only matches via the manifest-file path
+    (scan_file_for_dependency_typosquats)."""
     findings: list[Finding] = []
     for pattern, popular, ecosystem in (
         (PIP_INSTALL_RE, POPULAR_PYPI_PACKAGES, "PyPI"),
@@ -460,6 +475,19 @@ def scan_text_for_dependency_typosquats(text: str, source: str) -> list[Finding]
         for match in pattern.finditer(text):
             line_no = text.count("\n", 0, match.start()) + 1
             for target in _extract_install_targets(match.group("args")):
+                malicious = _known_malicious_match(target, None, ecosystem)
+                if malicious is not None:
+                    findings.append(
+                        Finding(
+                            category="known_malicious_package",
+                            severity=Severity.CRITICAL,
+                            summary=f"Install target '{target}' matches a documented "
+                            f"supply-chain compromise ({malicious.advisory})",
+                            detail=f"line {line_no}: {match.group(0).strip()[:200]}",
+                            source=source,
+                        )
+                    )
+                    continue
                 popular_name = _typosquat_match(target, popular)
                 if popular_name is None:
                     continue
@@ -477,35 +505,59 @@ def scan_text_for_dependency_typosquats(text: str, source: str) -> list[Finding]
     return findings
 
 
-def _parse_requirements_txt(text: str) -> list[str]:
-    names = []
+def _extract_exact_version(token: str, name: str) -> str | None:
+    # Deliberately conservative: only a single, unambiguous ==X.Y.Z specifier
+    # counts as a pin. A comma-joined multi-spec (=="1.0,!=1.0.1") or any
+    # other operator (>=, ~=, ...) can't be resolved to one exact version
+    # without a real registry lookup, so it's treated as unpinned (None).
+    specifier = token[len(name) :].strip()
+    if not specifier.startswith("==") or "," in specifier:
+        return None
+    return specifier[2:].strip() or None
+
+
+def _parse_requirements_txt(text: str) -> list[tuple[str, str | None]]:
+    entries = []
     for line in text.splitlines():
         stripped = line.split("#", 1)[0].strip()
         if not stripped or stripped.startswith("-"):
             continue
-        name = _strip_version_specifier(stripped.split(";")[0].strip())
+        token = stripped.split(";")[0].strip()
+        name = _strip_version_specifier(token)
         if name:
-            names.append(name)
-    return names
+            entries.append((name, _extract_exact_version(token, name)))
+    return entries
 
 
-def _parse_package_json(text: str) -> list[str]:
+_EXACT_NPM_PIN_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][\w.]+)?$")
+
+
+def _parse_package_json(text: str) -> list[tuple[str, str | None]]:
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, ValueError):
         return []
-    names = []
+    entries = []
     for key in ("dependencies", "devDependencies"):
         deps = data.get(key) if isinstance(data, dict) else None
         if isinstance(deps, dict):
-            names.extend(deps.keys())
-    return names
+            for name, spec in deps.items():
+                # A bare exact-semver value ("1.2.3") is a real pin; any range
+                # prefix (^, ~, >=, *, ||, ...) can resolve to more than one
+                # version, so it's treated as unpinned (None) here too.
+                pin = spec.strip() if isinstance(spec, str) and _EXACT_NPM_PIN_RE.match(spec.strip()) else None
+                entries.append((name, pin))
+    return entries
 
 
 def scan_file_for_dependency_typosquats(path: Path) -> list[Finding]:
-    """Flag typosquat-shaped names in a bundled dependency manifest
+    """Flag typosquat-shaped names, and known-malicious packages
+    (KNOWN_MALICIOUS_PACKAGES), in a bundled dependency manifest
     (requirements.txt/package.json), or in an install command inside any
-    other bundled script/prose file."""
+    other bundled script/prose file. A manifest's exact pinned version is
+    checked against known-malicious entries too - a plain typosquat can't
+    tell a real compromise apart from a coincidental name match, but an
+    exact version pin can."""
     if not _is_scannable_text_file(path):
         return []
     try:
@@ -515,14 +567,28 @@ def scan_file_for_dependency_typosquats(path: Path) -> list[Finding]:
 
     lowered_name = path.name.lower()
     if lowered_name == "requirements.txt":
-        names, popular, ecosystem = _parse_requirements_txt(text), POPULAR_PYPI_PACKAGES, "PyPI"
+        entries, popular, ecosystem = _parse_requirements_txt(text), POPULAR_PYPI_PACKAGES, "PyPI"
     elif lowered_name == "package.json":
-        names, popular, ecosystem = _parse_package_json(text), POPULAR_NPM_PACKAGES, "npm"
+        entries, popular, ecosystem = _parse_package_json(text), POPULAR_NPM_PACKAGES, "npm"
     else:
         return scan_text_for_dependency_typosquats(text, str(path))
 
     findings: list[Finding] = []
-    for name in names:
+    for name, version in entries:
+        malicious = _known_malicious_match(name, version, ecosystem)
+        if malicious is not None:
+            pin = f"=={version}" if version else ""
+            findings.append(
+                Finding(
+                    category="known_malicious_package",
+                    severity=Severity.CRITICAL,
+                    summary=f"Declared dependency '{name}{pin}' matches a documented "
+                    f"supply-chain compromise ({malicious.advisory})",
+                    detail=f"declared in {path.name}",
+                    source=str(path),
+                )
+            )
+            continue
         popular_name = _typosquat_match(name, popular)
         if popular_name is None:
             continue
